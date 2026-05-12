@@ -2410,13 +2410,13 @@ async function fireScheduledRun({ label, sites, extraEnv, postRun }) {
 }
 
 const detachedRuns = new Map();
-function appendDetachedRunLog(type, text) {
+function appendDetachedRunLog(label, type, text) {
   const lines = String(text || '').split(/\r?\n/).filter(l => l.length);
   for (const l of lines) {
     if (/^\s*\[run\]\s/.test(l)) continue;
     const isSection = /^───/.test(l);
     const isHeader = /^===/.test(l);
-    runLog.push({ type, text: l, time: (isSection || isHeader) ? null : datetime() });
+    runLog.push({ type, text: `[${label}] ${l}`, time: (isSection || isHeader) ? null : datetime() });
   }
 }
 
@@ -2443,7 +2443,7 @@ function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
   const onData = data => {
     const text = data.toString();
     process.stdout.write(text);
-    appendDetachedRunLog('stdout', text);
+    appendDetachedRunLog(label, 'stdout', text);
     for (const m of text.matchAll(/\[run\]\s+service=([a-z0-9-]+)\s+ok\b/g)) {
       recordLastRunSuccess(m[1]);
     }
@@ -2452,7 +2452,7 @@ function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
   child.stderr.on('data', data => {
     const text = data.toString();
     process.stderr.write(text);
-    appendDetachedRunLog('stderr', text);
+    appendDetachedRunLog(label, 'stderr', text);
   });
   child.on('close', code => {
     detachedRuns.delete(label);

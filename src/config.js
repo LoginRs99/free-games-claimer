@@ -18,6 +18,8 @@ const pg    = svc['prime-gaming'] || {};
 const eg    = svc['epic-games']   || {};
 const gog   = svc['gog']          || {};
 const steam = svc['steam']        || {};
+const sg    = svc['steamgifts']   || {};
+const awa   = svc['alienware-arena'] || {};
 const ae    = svc['aliexpress']   || {};
 const ms    = svc['microsoft']    || {};
 const lenovo = svc['lenovo-gaming'] || {};
@@ -135,6 +137,22 @@ export const cfg = {
   // games with zero reviews (assumed shovelware). Turn off to catch
   // launch-day indies before they have reviews. See #61.
   steam_skip_unrated: steam.skipUnrated ?? true,
+  // steamgifts
+  sg_gift_type: sg.giftType || 'Special Mode',
+  sg_min_points: sg.minPoints ?? 70,
+  sg_max_entries: sg.maxEntries ?? 8,
+  sg_max_pages: sg.maxPages ?? 4,
+  sg_include_pinned: sg.includePinned ?? false,
+  sg_special_stages: sg.specialStages || 'Wishlist,Group,Recommended,DLC',
+  sg_ignored_words: sg.ignoredWords || 'furry,mahjong,hentai,waifu,sex,puzzle,exe,pussy,meme',
+  sg_entry_delay_sec: sg.entryDelaySec ?? 120,
+  // alienware arena / AWA Twitch watch time
+  awa_presence_minutes: awa.presenceMinutes ?? 30,
+  awa_daily_target_minutes: awa.dailyTargetMinutes ?? 250,
+  awa_watch_chunk_minutes: awa.watchChunkMinutes ?? 30,
+  awa_twitch_streamers: awa.twitchStreamers || '3llebelle,BiffleTV,PirateGray,FooYa,RogersBase,TheGeekEntry,Layria,MatthewSantoro,Lovinurstyle,Liddles,TrishaHershberger,Mactics,MoonlitCharlie',
+  awa_twitch_client_id: process.env.TWITCH_CLIENT_ID,
+  awa_twitch_client_secret: process.env.TWITCH_CLIENT_SECRET,
   // auth microsoft rewards
   ms_email: process.env.MS_EMAIL || process.env.EMAIL,
   ms_password: process.env.MS_PASSWORD || process.env.PASSWORD,

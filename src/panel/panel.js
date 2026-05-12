@@ -2411,15 +2411,15 @@ async function fireScheduledRun({ label, sites, extraEnv, postRun }) {
 
 const detachedRuns = new Map();
 function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
-  if (!sites || !sites.length) return false;
+  if (!sites || !sites.length) return { success: false, error: 'No service specified.' };
   if (detachedRuns.has(label)) {
     console.log(`[${datetime()}] Scheduler (${label}): previous run still active — skipping this tick.`);
-    return false;
+    return { success: false, error: `${label} is already running.` };
   }
   const cmd = resolveClaimCommand({ manual: false, sites });
   if (!cmd) {
     console.log(`[${datetime()}] Scheduler (${label}): no command resolved — skipping.`);
-    return false;
+    return { success: false, error: `No command resolved for ${label}.` };
   }
   const env = { ...process.env, NOWAIT: '1', ...extraEnv };
   console.log(`[${datetime()}] Scheduler (${label}): starting detached run: ${cmd}`);
@@ -2450,7 +2450,7 @@ function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
     console.log(`[${datetime()}] Scheduler (${label}): detached run exited with code ${code}.`);
     if (code === 0 && typeof markFired === 'function') markFired();
   });
-  return true;
+  return { success: true, detached: true };
 }
 
 function nonMsActiveSiteIds() {
@@ -2659,7 +2659,7 @@ async function awaSchedulerLoop() {
     if (!st || st.status !== 'pending') continue;
 
     fireDetachedScheduledRun({
-      label: 'awa',
+      label: 'alienware-arena',
       sites: ['alienware-arena'],
       markFired: () => {
         const cur = readAwaScheduleToday();
@@ -3431,8 +3431,109 @@ async function getAliexpressData() {
   return { latestBalance, latestAt, weekEarned, monthEarned, row };
 }
 
+async function getSteamGiftsData() {
+  let db;
+  try { db = await jsonDb('steamgifts.json', {}); }
+  catch { return { latestPoints: null, latestAt: null, row: null, activity: [] }; }
+  const data = db.data || {};
+  const now = Date.now();
+  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const monthAgo = now - 30 * 24 * 60 * 60 * 1000;
+  const toMs = s => { const d = parseLocalDateTime(s); return d ? d.getTime() : 0; };
+  let latestPoints = null, latestAt = null, latestMs = 0;
+  const row = { thisWeek: 0, thisMonth: 0, allTime: 0, lastClaimAt: null, unit: 'entries' };
+  const activity = [];
+  for (const [user, rec] of Object.entries(data)) {
+    if (!rec || typeof rec !== 'object') continue;
+    const lp = rec.latestPoints;
+    const lpMs = toMs(lp && lp.time);
+    if (lp && lp.value != null && lpMs >= latestMs) {
+      latestPoints = lp.value;
+      latestAt = lp.time;
+      latestMs = lpMs;
+    }
+    const entries = rec.entries && typeof rec.entries === 'object' ? rec.entries : {};
+    for (const [id, entry] of Object.entries(entries)) {
+      if (!entry || entry.status !== 'entered') continue;
+      const tMs = toMs(entry.time);
+      if (!tMs) continue;
+      row.allTime++;
+      if (tMs >= weekAgo) row.thisWeek++;
+      if (tMs >= monthAgo) row.thisMonth++;
+      if (!row.lastClaimAt || tMs > toMs(row.lastClaimAt)) row.lastClaimAt = entry.time;
+      activity.push({
+        at: parseLocalDateTime(entry.time),
+        service: 'steamgifts',
+        user,
+        title: entry.title || id,
+        url: entry.url || null,
+        status: 'entered',
+      });
+    }
+    const wins = rec.wins && typeof rec.wins === 'object' ? rec.wins : {};
+    for (const [id, win] of Object.entries(wins)) {
+      const tMs = toMs(win && win.time);
+      if (!tMs) continue;
+      activity.push({
+        at: parseLocalDateTime(win.time),
+        service: 'steamgifts',
+        user,
+        title: `Won: ${win.title || id}`,
+        url: win.url || null,
+        status: 'won',
+      });
+    }
+  }
+  return { latestPoints, latestAt, row: row.allTime || latestAt ? row : null, activity };
+}
+
+async function getAlienwareArenaData() {
+  let db;
+  try { db = await jsonDb('alienware-arena.json', { days: {} }); }
+  catch { return { latestArp: null, latestAt: null, row: null, activity: [] }; }
+  const days = db.data && db.data.days && typeof db.data.days === 'object' ? db.data.days : {};
+  const now = Date.now();
+  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const monthAgo = now - 30 * 24 * 60 * 60 * 1000;
+  const toMs = s => { const d = parseLocalDateTime(s); return d ? d.getTime() : 0; };
+  const row = { thisWeek: 0, thisMonth: 0, allTime: 0, lastClaimAt: null, unit: 'minutes' };
+  const activity = [];
+  for (const [day, rec] of Object.entries(days)) {
+    if (!rec || typeof rec !== 'object') continue;
+    const sessions = Array.isArray(rec.sessions) ? rec.sessions : [];
+    for (const s of sessions) {
+      const tMs = toMs(s.time);
+      const minutes = Number.isFinite(s.minutes) ? Math.max(0, s.minutes) : 0;
+      if (!tMs || !minutes) continue;
+      row.allTime += minutes;
+      if (tMs >= weekAgo) row.thisWeek += minutes;
+      if (tMs >= monthAgo) row.thisMonth += minutes;
+      if (!row.lastClaimAt || tMs > toMs(row.lastClaimAt)) row.lastClaimAt = s.time;
+      activity.push({
+        at: parseLocalDateTime(s.time),
+        service: 'alienware-arena',
+        title: `${s.platform || 'AWA'}: ${s.details || day}`,
+        url: null,
+        status: `${Math.round(minutes)} minutes`,
+      });
+    }
+  }
+  const latest = db.data && db.data.latestArp;
+  return {
+    latestArp: latest && latest.value != null ? latest.value : null,
+    latestAt: latest && latest.time ? latest.time : null,
+    row: row.allTime ? {
+      ...row,
+      thisWeek: Math.round(row.thisWeek),
+      thisMonth: Math.round(row.thisMonth),
+      allTime: Math.round(row.allTime),
+    } : null,
+    activity,
+  };
+}
+
 async function getStatsSummary() {
-  const [claims, ms] = await Promise.all([readAllClaims(), getMsRewards()]);
+  const [claims, ms, sg, awa] = await Promise.all([readAllClaims(), getMsRewards(), getSteamGiftsData(), getAlienwareArenaData()]);
   const now = Date.now();
   const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
   const monthAgo = now - 30 * 24 * 60 * 60 * 1000;
@@ -3455,11 +3556,17 @@ async function getStatsSummary() {
     msPointsBalanceAt: ms.latestAt,
     msPointsThisWeek: ms.weekEarned,
     msPointsThisMonth: ms.monthEarned,
+    sgPointsBalance: sg.latestPoints,
+    sgPointsBalanceAt: sg.latestAt,
+    sgEntriesThisWeek: sg.row ? sg.row.thisWeek : 0,
+    awaArpBalance: awa.latestArp,
+    awaArpBalanceAt: awa.latestAt,
+    awaMinutesThisWeek: awa.row ? awa.row.thisWeek : 0,
   };
 }
 
 async function getStatsByService() {
-  const [claims, ms, ae] = await Promise.all([readAllClaims(), getMsRewards(), getAliexpressData()]);
+  const [claims, ms, ae, sg, awa] = await Promise.all([readAllClaims(), getMsRewards(), getAliexpressData(), getSteamGiftsData(), getAlienwareArenaData()]);
   const rows = {};
   for (const svc of Object.keys(CLAIM_DB_FILES)) {
     rows[svc] = { id: svc, unit: 'games', thisWeek: 0, thisMonth: 0, allTime: 0, lastClaimAt: null };
@@ -3470,6 +3577,8 @@ async function getStatsByService() {
   if (ae.row) {
     rows['aliexpress'] = { id: 'aliexpress', ...ae.row };
   }
+  rows['steamgifts'] = { id: 'steamgifts', ...(sg.row || { thisWeek: 0, thisMonth: 0, allTime: 0, lastClaimAt: null, unit: 'entries' }) };
+  rows['alienware-arena'] = { id: 'alienware-arena', ...(awa.row || { thisWeek: 0, thisMonth: 0, allTime: 0, lastClaimAt: null, unit: 'minutes' }) };
   const now = Date.now();
   const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
   const monthAgo = now - 30 * 24 * 60 * 60 * 1000;
@@ -3534,9 +3643,11 @@ async function getStatsDaily(days = 30) {
 }
 
 async function getActivity(limit = 10) {
-  const claims = await readAllClaims();
-  claims.sort((a, b) => b.at - a.at);
-  return claims.slice(0, limit).map(c => ({
+  const [claims, sg, awa] = await Promise.all([readAllClaims(), getSteamGiftsData(), getAlienwareArenaData()]);
+  const activity = claims.concat(sg.activity || [], awa.activity || [])
+    .filter(c => c && c.at && Number.isFinite(c.at.getTime()));
+  activity.sort((a, b) => b.at - a.at);
+  return activity.slice(0, limit).map(c => ({
     at: datetime(c.at),
     service: c.service,
     serviceName: (SITES[c.service] && SITES[c.service].name) || DISCOVERY_DISPLAY_NAMES[c.service] || c.service,
@@ -6949,6 +7060,12 @@ async function renderStatsTab() {
       { label: 'MS points this week',
         value: msPending ? 'Pending' : fmt(summary.msPointsThisWeek),
         hint:  msPending ? 'captured on next microsoft run' : 'via captured runs' },
+      { label: 'SteamGifts points',
+        value: summary.sgPointsBalance == null ? 'Pending' : fmt(summary.sgPointsBalance),
+        hint:  summary.sgPointsBalanceAt ? 'as of ' + formatTimestamp(summary.sgPointsBalanceAt, 'short') : 'captured on next SteamGifts run' },
+      { label: 'AWA ARP',
+        value: summary.awaArpBalance == null ? 'Pending' : fmt(summary.awaArpBalance),
+        hint:  summary.awaArpBalanceAt ? 'as of ' + formatTimestamp(summary.awaArpBalanceAt, 'short') : 'captured on next Alienware Arena run' },
     ];
     kpis.innerHTML = tiles.map(k =>
       '<div class="kpi"><div class="kpi-label">' + k.label + '</div>' +
@@ -6958,12 +7075,20 @@ async function renderStatsTab() {
     ).join('');
 
     const fmt2 = n => new Intl.NumberFormat().format(n);
-    const unitSuffix = u => u === 'points' ? ' pts' : u === 'coins' ? ' coins' : '';
+    const unitSuffix = u => u === 'points' ? ' pts'
+      : u === 'coins' ? ' coins'
+      : u === 'entries' ? ' entries'
+      : u === 'minutes' ? ' min'
+      : '';
     const unitPlaceholder = u => u === 'points'
       ? 'points-based — balance appears after the next microsoft run'
       : u === 'coins'
         ? 'coins-based — appears after enabling AliExpress and running once'
-        : u + '-based';
+        : u === 'entries'
+          ? 'giveaway entries appear after the next SteamGifts run'
+          : u === 'minutes'
+            ? 'tracked minutes appear after the next Alienware Arena run'
+            : u + '-based';
     const rows = byService.map(r => {
       const last = r.lastClaimAt
         ? '<span title="' + escapeHtml(r.lastClaimAt) + '">' + escapeHtml(formatTimestamp(r.lastClaimAt, 'relative')) + '</span>'
@@ -8187,6 +8312,8 @@ function render() {
     const reloginIcon = isLoggedIn
       ? '<button class="site-card-relogin" onclick="confirmRelogin(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Change account / force re-login" aria-label="Change account">↻</button>'
       : '';
+    const independentRun = customFarmIds.has(s.id);
+    const runDisabled = disabled && !(independentRun && !busy && !state.activeBrowser);
     // Site-link target needs both target="_blank" (open in new tab when
     // the panel is at top-level) AND target="_top" (navigate the parent
     // tab when iframed inside Organizr / similar). The latter is the
@@ -8212,7 +8339,7 @@ function render() {
       '<div class="card-actions">' +
         loginOrCheck +
         '<button class="btn btn-cookie" onclick="openCookieModal(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Import cookies for this site (paste JSON or upload a file)">↑ Cookie</button>' +
-        '<button class="btn btn-run-single" onclick="runSite(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Run this service now">Run</button>' +
+        '<button class="btn btn-run-single" onclick="runSite(\\'' + s.id + '\\')" ' + (runDisabled ? 'disabled' : '') + ' title="Run this service now">Run</button>' +
       '</div>' +
     '</div>';
   };
@@ -9328,6 +9455,14 @@ const server = http.createServer(async (req, res) => {
         const site = body && body.site;
         if (!site || typeof site !== 'string') {
           sendJson(res, { success: false, error: 'site required (e.g. {"site": "microsoft"})' }, 400);
+          return;
+        }
+        if (INDEPENDENT_SCHEDULED_SITE_IDS.has(site)) {
+          const result = fireDetachedScheduledRun({
+            label: site,
+            sites: [site],
+          });
+          sendJson(res, result, result.success ? 200 : 409);
           return;
         }
         // microsoft and microsoft-mobile are both served by microsoft.js;

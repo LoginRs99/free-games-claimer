@@ -132,6 +132,7 @@ async function login() {
   db.data[user] ||= { entries: {}, wins: {} };
   db.data[user].entries ||= {};
   db.data[user].wins ||= {};
+  db.data[user].latestPoints = { value: points, time: datetime() };
 }
 
 function configuredStages() {

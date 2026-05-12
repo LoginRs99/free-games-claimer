@@ -825,6 +825,116 @@ export const SITES = [
     ],
     checkLogin: null,
   },
+  {
+    id: 'steamgifts',
+    name: 'SteamGifts',
+    version: '0.1',
+    subtitle: 'Enters SteamGifts giveaways using the persistent browser session. Sign in once through the Sessions tab; entries are capped per run.',
+    script: 'steamgifts.js',
+    claimOrder: 11,
+    loginUrl: 'https://www.steamgifts.com/?login',
+    homeUrl: 'https://www.steamgifts.com/',
+    get browserDir() { return cfg.dir.browser + '-steamgifts'; },
+    contextOptions: null,
+    defaultActive: false,
+    activeEnv: 'SG_ACTIVE',
+    linkedWith: null,
+    claimDbFile: null,
+    scheduleKind: 'daily-chain',
+    features: ['captcha-marker'],
+    configFields: [
+      { key: 'giftType', env: 'SG_GIFT_TYPE', type: 'string', default: 'Special Mode',
+        label: 'Gift type',
+        hint: 'Allowed: Special Mode, All, Wishlist, Recommended, Copies, DLC, Group, New.' },
+      { key: 'minPoints', env: 'SG_MIN_POINTS', type: 'number', default: 70,
+        label: 'Minimum points before entering',
+        unit: 'points',
+        coerce: { kind: 'numberBounded', min: 0, fallback: 70 } },
+      { key: 'maxEntries', env: 'SG_MAX_ENTRIES', type: 'number', default: 8,
+        label: 'Maximum entries per run',
+        coerce: { kind: 'numberBounded', min: 1, fallback: 8 } },
+      { key: 'maxPages', env: 'SG_MAX_PAGES', type: 'number', default: 4,
+        label: 'Maximum pages per filter',
+        coerce: { kind: 'numberBounded', min: 1, fallback: 4 } },
+      { key: 'includePinned', env: 'SG_INCLUDE_PINNED', type: 'boolean', default: false,
+        label: 'Include pinned giveaways' },
+      { key: 'specialStages', env: 'SG_SPECIAL_STAGES', type: 'string', default: 'Wishlist,Group,Recommended,DLC',
+        label: 'Special Mode stages',
+        hint: 'Comma-separated subset of: Wishlist, Recommended, Group, DLC, New, Copies, All.' },
+      { key: 'ignoredWords', env: 'SG_IGNORED_WORDS', type: 'string', default: 'furry,mahjong,hentai,waifu,sex,puzzle,exe,pussy,meme',
+        label: 'Ignored title words',
+        hint: 'Comma-separated; giveaways containing these words are skipped.' },
+      { key: 'entryDelaySec', env: 'SG_ENTRY_DELAY_SEC', type: 'number', default: 120,
+        label: 'Delay between entries',
+        unit: 'seconds',
+        coerce: { kind: 'numberBounded', min: 5, fallback: 120 } },
+    ],
+    async checkLogin(page) {
+      try {
+        await page.goto('https://www.steamgifts.com/', { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await page.waitForTimeout(2000);
+        const points = await page.locator('.nav__points').first().innerText({ timeout: 5000 }).catch(() => null);
+        if (points && /\d+/.test(points)) {
+          const user = await page.locator('.nav__avatar-outer-wrap, .nav__username, a[href^="/user/"]').first().innerText({ timeout: 2000 }).catch(() => 'member');
+          return { loggedIn: true, user: user?.trim() || 'member' };
+        }
+        return { loggedIn: false };
+      } catch {
+        return { loggedIn: false };
+      }
+    },
+  },
+  {
+    id: 'alienware-arena',
+    name: 'Alienware Arena',
+    version: '0.1',
+    subtitle: 'Maintains AWA control-center presence, then watches configured Twitch streamers until the daily watch-time target is reached. Sign in once through the Sessions tab.',
+    script: 'alienware-arena.js',
+    claimOrder: 12,
+    loginUrl: 'https://eu.alienwarearena.com/control-center',
+    homeUrl: 'https://eu.alienwarearena.com/control-center',
+    get browserDir() { return cfg.dir.browser + '-alienware-arena'; },
+    contextOptions: null,
+    defaultActive: false,
+    activeEnv: 'AWA_ACTIVE',
+    linkedWith: null,
+    claimDbFile: null,
+    scheduleKind: 'daily-chain',
+    features: ['captcha-marker'],
+    configFields: [
+      { key: 'presenceMinutes', env: 'AWA_PRESENCE_MINUTES', type: 'number', default: 30,
+        label: 'AWA presence time',
+        unit: 'minutes',
+        coerce: { kind: 'numberBounded', min: 0, fallback: 30 } },
+      { key: 'dailyTargetMinutes', env: 'AWA_DAILY_TARGET_MINUTES', type: 'number', default: 250,
+        label: 'Daily watch-time target',
+        unit: 'minutes',
+        coerce: { kind: 'numberBounded', min: 10, fallback: 250 } },
+      { key: 'watchChunkMinutes', env: 'AWA_WATCH_CHUNK_MINUTES', type: 'number', default: 30,
+        label: 'Twitch watch chunk',
+        unit: 'minutes',
+        hint: 'The script watches one live streamer for this many minutes, then re-checks the daily target and live list.',
+        coerce: { kind: 'numberBounded', min: 1, fallback: 30 } },
+      { key: 'twitchStreamers', env: 'AWA_TWITCH_STREAMERS', type: 'string',
+        default: '3llebelle,BiffleTV,PirateGray,FooYa,RogersBase,TheGeekEntry,Layria,MatthewSantoro,Lovinurstyle,Liddles,TrishaHershberger,Mactics,MoonlitCharlie',
+        label: 'Twitch streamers',
+        hint: 'Comma-separated Twitch logins. Set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET env vars for accurate live checks.' },
+    ],
+    async checkLogin(page) {
+      try {
+        await page.goto('https://eu.alienwarearena.com/control-center', { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await page.waitForTimeout(2500);
+        const loggedIn = await page.locator('[data-is-logged-in="true"], a[href="/quests"]').first().count();
+        if (loggedIn > 0) {
+          const user = await page.locator('.media-body, .username, [class*="username"]').first().innerText({ timeout: 2000 }).catch(() => 'member');
+          return { loggedIn: true, user: user?.trim() || 'member' };
+        }
+        return { loggedIn: false };
+      } catch {
+        return { loggedIn: false };
+      }
+    },
+  },
 ];
 
 export const SITES_BY_ID = Object.fromEntries(SITES.map(s => [s.id, s]));

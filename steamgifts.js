@@ -68,7 +68,19 @@ async function captchaVisible() {
     'iframe[title*="captcha" i]',
     '[class*="captcha" i]',
     '[id*="captcha" i]',
+    '#challenge-stage',
+    '.cf-challenge',
+    '[data-translate="checking_browser"]',
   ].join(', ')).first().isVisible().catch(() => false);
+}
+
+async function botProtectionVisible() {
+  if (await captchaVisible()) return true;
+  return await page.evaluate(() => {
+    const text = document.body?.innerText || '';
+    return /just a moment|checking your browser|verify you are human|cloudflare/i.test(document.title || '')
+      || /just a moment|checking your browser|verify you are human|cloudflare/i.test(text);
+  }).catch(() => true);
 }
 
 async function readSession() {
@@ -187,7 +199,7 @@ async function readGiveaways(searchUrl, stageName) {
   }, { includePinned: cfg.sg_include_pinned, ignoredWords, stageName });
 }
 
-async function enterGiveaway(giveaway) {
+async function postGiveawayEntry(giveaway) {
   if (!xsrfToken) throw new Error('missing xsrf token');
 
   const res = await page.request.post(`${BASE}/ajax.php`, {
@@ -204,20 +216,53 @@ async function enterGiveaway(giveaway) {
   });
 
   let body;
+  let text = '';
   try { body = await res.json(); }
   catch {
-    const text = await res.text().catch(() => '');
-    throw new Error(`unexpected response ${res.status()}: ${text.slice(0, 120)}`);
+    text = await res.text().catch(() => '');
+    return { ok: false, status: res.status(), text };
   }
 
   if (body?.type === 'success') {
     if (body.points != null) points = Number(body.points);
     else points -= giveaway.cost;
-    return true;
+    return { ok: true };
   }
 
   const msg = body?.msg || `HTTP ${res.status()}`;
   if (/not have enough points/i.test(msg) && body?.points != null) points = Number(body.points);
+  return { ok: false, status: res.status(), msg };
+}
+
+function looksLikeBotProtection(result) {
+  const haystack = `${result.status || ''} ${result.msg || ''} ${result.text || ''}`;
+  return /403|just a moment|checking your browser|verify you are human|cloudflare/i.test(haystack);
+}
+
+async function clearBotProtection(giveaway) {
+  log.warn(`${giveaway.title} — SteamGifts bot protection detected, opening giveaway page for manual solve`);
+  await page.goto(giveaway.url, { waitUntil: 'domcontentloaded' });
+  const solved = await awaitUserCaptchaSolve(page, {
+    service: SITE_ID,
+    label: 'SteamGifts bot protection',
+    captchaCheck: botProtectionVisible,
+  });
+  if (!solved) return false;
+  await readSession();
+  return true;
+}
+
+async function enterGiveaway(giveaway) {
+  let result = await postGiveawayEntry(giveaway);
+  if (result.ok) return true;
+
+  if (looksLikeBotProtection(result) && await clearBotProtection(giveaway)) {
+    result = await postGiveawayEntry(giveaway);
+    if (result.ok) return true;
+  }
+
+  if (result.text) throw new Error(`unexpected response ${result.status}: ${result.text.slice(0, 120)}`);
+  const msg = result.msg || `HTTP ${result.status || 'unknown'}`;
   throw new Error(msg);
 }
 

@@ -2350,6 +2350,16 @@ async function fireScheduledRun({ label, sites, extraEnv, postRun }) {
 }
 
 const detachedRuns = new Map();
+function appendDetachedRunLog(type, text) {
+  const lines = String(text || '').split(/\r?\n/).filter(l => l.length);
+  for (const l of lines) {
+    if (/^\s*\[run\]\s/.test(l)) continue;
+    const isSection = /^───/.test(l);
+    const isHeader = /^===/.test(l);
+    runLog.push({ type, text: l, time: (isSection || isHeader) ? null : datetime() });
+  }
+}
+
 function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
   if (!sites || !sites.length) return { success: false, error: 'No service specified.' };
   if (detachedRuns.has(label)) {
@@ -2363,17 +2373,17 @@ function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
   }
   const env = { ...process.env, NOWAIT: '1', ...extraEnv };
   console.log(`[${datetime()}] Scheduler (${label}): starting detached run: ${cmd}`);
-  runLog.push(`[${datetime()}] Scheduler (${label}) detached run started: ${cmd}`);
+  runLog.push({ type: 'system', text: `Detached run (${label}) started: ${cmd}`, time: datetime() });
   const child = spawn('bash', ['-c', cmd], {
     cwd: __panelDirname,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  detachedRuns.set(label, child);
+  detachedRuns.set(label, { child, sites: sites.slice(), startedAt: datetime() });
   const onData = data => {
     const text = data.toString();
     process.stdout.write(text);
-    runLog.push(text);
+    appendDetachedRunLog('stdout', text);
     for (const m of text.matchAll(/\[run\]\s+service=([a-z0-9-]+)\s+ok\b/g)) {
       recordLastRunSuccess(m[1]);
     }
@@ -2382,11 +2392,11 @@ function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
   child.stderr.on('data', data => {
     const text = data.toString();
     process.stderr.write(text);
-    runLog.push(text);
+    appendDetachedRunLog('stderr', text);
   });
   child.on('close', code => {
     detachedRuns.delete(label);
-    runLog.push(`[${datetime()}] Scheduler (${label}) detached run exited with code ${code}`);
+    runLog.push({ type: 'system', text: `Detached run (${label}) exited with code ${code}`, time: datetime() });
     console.log(`[${datetime()}] Scheduler (${label}): detached run exited with code ${code}.`);
     if (code === 0 && typeof markFired === 'function') markFired();
   });
@@ -2926,6 +2936,12 @@ async function getState() {
 
   const msState = msScheduled ? (msTodayState || readMsScheduleToday()) : null;
   const awaState = awaScheduled ? (awaTodayState || readAwaScheduleToday()) : null;
+  const detachedRunList = Array.from(detachedRuns.entries()).map(([label, r]) => ({
+    label,
+    sites: Array.isArray(r.sites) ? r.sites : [],
+    startedAt: r.startedAt || null,
+  }));
+  const detachedRunningIds = new Set(detachedRunList.flatMap(r => r.sites));
 
   return {
     sites: Object.entries(SITES).map(([id, site]) => ({
@@ -2944,6 +2960,7 @@ async function getState() {
       // sites where it's already a useful destination (Prime, GOG,
       // MS, AliExpress all have homeUrl == loginUrl semantically).
       siteUrl: site.homeUrl || site.loginUrl || null,
+      detachedRunning: detachedRunningIds.has(id),
       ...siteStatus[id],
     })),
     // Active watch-only collectors (scheduleKind: 'watch-only'). They are
@@ -2959,6 +2976,7 @@ async function getState() {
     runStatus,
     runSource,
     runLogLength: runLog.length,
+    detachedRuns: detachedRunList,
     // Server-local timestamps (legacy fields — naked strings, no TZ marker).
     // Kept for any external /api/state consumers; the panel now prefers
     // the *Iso fields below for accurate display + countdown across TZs.
@@ -7804,6 +7822,7 @@ function render() {
     else if (s.status === 'error') statusText = 'Error checking.';
     if (s.lastSuccessfulRun) statusText += ' Successful Run ' + s.lastSuccessfulRun + '.';
     else statusText += ' Successful Run: never.';
+    if (s.detachedRunning) statusText += ' Running in background.';
     const versionLabel = s.version ? '<div class="site-card-version">v' + escapeHtml(s.version) + '</div>' : '';
     // Login OR Check button, status-driven. The "force re-login" override
     // is rendered separately as a small bare icon in the card header
@@ -7818,7 +7837,8 @@ function render() {
       ? '<button class="site-card-relogin" onclick="confirmRelogin(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Change account / force re-login" aria-label="Change account">↻</button>'
       : '';
     const independentRun = customFarmIds.has(s.id);
-    const runDisabled = disabled && !(independentRun && !busy && !state.activeBrowser);
+    const runDisabled = s.detachedRunning || (disabled && !(independentRun && !busy && !state.activeBrowser));
+    const runLabel = s.detachedRunning ? 'Running…' : 'Run';
     // Site-link target needs both target="_blank" (open in new tab when
     // the panel is at top-level) AND target="_top" (navigate the parent
     // tab when iframed inside Organizr / similar). The latter is the
@@ -7844,7 +7864,7 @@ function render() {
       '<div class="card-actions">' +
         loginOrCheck +
         '<button class="btn btn-cookie" onclick="openCookieModal(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Import cookies for this site (paste JSON or upload a file)">↑ Cookie</button>' +
-        '<button class="btn btn-run-single" onclick="runSite(\\'' + s.id + '\\')" ' + (runDisabled ? 'disabled' : '') + ' title="Run this service now">Run</button>' +
+        '<button class="btn btn-run-single" onclick="runSite(\\'' + s.id + '\\')" ' + (runDisabled ? 'disabled' : '') + ' title="Run this service now">' + runLabel + '</button>' +
       '</div>' +
     '</div>';
   };
@@ -8952,7 +8972,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url.startsWith('/api/run-log')) {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const since = parseInt(url.searchParams.get('since') || '0', 10);
-      sendJson(res, { lines: runLog.slice(since), total: runLog.length, status: runStatus });
+      const liveStatus = runStatus === 'running' || detachedRuns.size ? 'running' : runStatus;
+      sendJson(res, { lines: runLog.slice(since), total: runLog.length, status: liveStatus });
       return;
     }
 

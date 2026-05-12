@@ -2463,6 +2463,18 @@ function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
   return { success: true, detached: true };
 }
 
+function stopDetachedRun(label) {
+  const run = detachedRuns.get(label);
+  if (!run || !run.child) return { success: false, error: `${label} is not running.` };
+  try {
+    run.child.kill('SIGTERM');
+    runLog.push({ type: 'system', text: `Detached run (${label}) stop requested by user.`, time: datetime() });
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
 function nonMsActiveSiteIds() {
   const active = activeServices();
   active.delete('microsoft');
@@ -8327,15 +8339,18 @@ function render() {
     // action button — only shown when logged in, since when not-logged-in
     // the Login button is already directly available.
     const isLoggedIn = s.status === 'logged_in';
+    const cardDisabled = disabled || s.detachedRunning;
     const loginOrCheck = isLoggedIn
-      ? '<button class="btn btn-check" onclick="checkSite(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + '>Check</button>'
-      : '<button class="btn btn-login" onclick="launchSite(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + '>Login</button>';
+      ? '<button class="btn btn-check" onclick="checkSite(\\'' + s.id + '\\')" ' + (cardDisabled ? 'disabled' : '') + '>Check</button>'
+      : '<button class="btn btn-login" onclick="launchSite(\\'' + s.id + '\\')" ' + (cardDisabled ? 'disabled' : '') + '>Login</button>';
     const reloginIcon = isLoggedIn
-      ? '<button class="site-card-relogin" onclick="confirmRelogin(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Change account / force re-login" aria-label="Change account">↻</button>'
+      ? '<button class="site-card-relogin" onclick="confirmRelogin(\\'' + s.id + '\\')" ' + (cardDisabled ? 'disabled' : '') + ' title="Change account / force re-login" aria-label="Change account">↻</button>'
       : '';
     const independentRun = customFarmIds.has(s.id);
     const runDisabled = s.detachedRunning || (disabled && !(independentRun && !busy && !state.activeBrowser));
-    const runLabel = s.detachedRunning ? 'Running…' : 'Run';
+    const runButton = s.detachedRunning
+      ? '<button class="btn btn-stop" onclick="stopDetachedSite(\\'' + s.id + '\\')" title="Stop this background service run">Stop</button>'
+      : '<button class="btn btn-run-single" onclick="runSite(\\'' + s.id + '\\')" ' + (runDisabled ? 'disabled' : '') + ' title="Run this service now">Run</button>';
     // Site-link target needs both target="_blank" (open in new tab when
     // the panel is at top-level) AND target="_top" (navigate the parent
     // tab when iframed inside Organizr / similar). The latter is the
@@ -8360,8 +8375,8 @@ function render() {
       '<div class="status ' + statusClass + '">' + statusText + '</div>' +
       '<div class="card-actions">' +
         loginOrCheck +
-        '<button class="btn btn-cookie" onclick="openCookieModal(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Import cookies for this site (paste JSON or upload a file)">↑ Cookie</button>' +
-        '<button class="btn btn-run-single" onclick="runSite(\\'' + s.id + '\\')" ' + (runDisabled ? 'disabled' : '') + ' title="Run this service now">' + runLabel + '</button>' +
+        '<button class="btn btn-cookie" onclick="openCookieModal(\\'' + s.id + '\\')" ' + (cardDisabled ? 'disabled' : '') + ' title="Import cookies for this site (paste JSON or upload a file)">↑ Cookie</button>' +
+        runButton +
       '</div>' +
     '</div>';
   };
@@ -8898,6 +8913,19 @@ async function runSite(siteId) {
     }
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
   busy = false;
+  await refreshState();
+}
+
+async function stopDetachedSite(siteId) {
+  const siteName = state.sites.find(s => s.id === siteId)?.name || siteId;
+  try {
+    const r = await api('POST', '/stop-detached-run', { site: siteId });
+    if (r && r.success === false) {
+      showToast(r.error || 'Stop failed', 'error', 5000);
+    } else {
+      showToast('Stopping ' + siteName + '…', 'info', 3000);
+    }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
   await refreshState();
 }
 
@@ -9492,6 +9520,26 @@ const server = http.createServer(async (req, res) => {
         await expireStaleActiveBrowser();
         const result = runAllScripts({ source: 'panel', sites: [site] });
         sendJson(res, result);
+      } catch (e) {
+        sendJson(res, { success: false, error: e.message }, 400);
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/stop-detached-run') {
+      try {
+        const body = await parseBody(req);
+        const site = body && body.site;
+        if (!site || typeof site !== 'string') {
+          sendJson(res, { success: false, error: 'site required (e.g. {"site": "steamgifts"})' }, 400);
+          return;
+        }
+        if (!INDEPENDENT_SCHEDULED_SITE_IDS.has(site)) {
+          sendJson(res, { success: false, error: `${site} is not a detached custom service.` }, 400);
+          return;
+        }
+        const result = stopDetachedRun(site);
+        sendJson(res, result, result.success ? 200 : 409);
       } catch (e) {
         sendJson(res, { success: false, error: e.message }, 400);
       }

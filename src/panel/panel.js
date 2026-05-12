@@ -873,6 +873,7 @@ let startupAutoCheck = null; // { current, total, siteName } while auto-check is
 // 'microsoft' (desktop) and 'microsoft-mobile' site cards — invoked once
 // via the linkedWith pointer and runs both sessions internally.
 const CLAIM_SCRIPT_ORDER = getClaimScriptOrder();
+const INDEPENDENT_SCHEDULED_SITE_IDS = new Set(['steamgifts', 'alienware-arena']);
 
 // The valid-service enum and opt-in defaults are sourced from the registry
 // (src/sites.js — Phase 0 of #11). Each entry's defaultActive flag drives
@@ -900,6 +901,7 @@ function buildClaimCommand({ manual = false, sites = null } = {}) {
   const targetSet = sites ? new Set(sites) : activeServices();
   const parts = [];
   for (const entry of CLAIM_SCRIPT_ORDER) {
+    if (!sites && INDEPENDENT_SCHEDULED_SITE_IDS.has(entry.id)) continue;
     if (!sites && manual && entry.id === 'microsoft') continue;
     // microsoft.js covers both desktop + mobile — invoke once if either ID
     // is in the target set.
@@ -1865,9 +1867,17 @@ const MS_SCHEDULE_START = cfg.ms_schedule_start;
 
 let nextMainRun = null;       // Date | null — main chain wake
 let nextMsRun = null;         // Date | null — MS-only wake (decoupled mode)
+let nextSteamGiftsRun = null; // Date | null — SteamGifts frequent checker wake
+let nextAwaRun = null;        // Date | null — Alienware Arena wake
 let msTodayState = null;      // last-read MS schedule state, for getState()
+let awaTodayState = null;     // last-read AWA schedule state, for getState()
 
+<<<<<<< HEAD:src/panel/panel.js
 const MS_SCHEDULE_FILE = dataDir('ms-schedule-today.json');
+=======
+const MS_SCHEDULE_FILE = path.resolve(__panelDirname, 'data', 'ms-schedule-today.json');
+const AWA_SCHEDULE_FILE = path.resolve(__panelDirname, 'data', 'awa-schedule-today.json');
+>>>>>>> 920b61d (Add custom service stats for SteamGifts and Alienware Arena):interactive-login.js
 
 function todayKey(d = new Date()) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -1880,27 +1890,38 @@ function nextDayKey(key) {
 }
 
 function readMsScheduleToday() {
+  return readDailyWindowState(MS_SCHEDULE_FILE);
+}
+function writeMsScheduleToday(state) {
+  writeDailyWindowState(MS_SCHEDULE_FILE, state, 'MS');
+}
+function readAwaScheduleToday() {
+  return readDailyWindowState(AWA_SCHEDULE_FILE);
+}
+function writeAwaScheduleToday(state) {
+  writeDailyWindowState(AWA_SCHEDULE_FILE, state, 'AWA');
+}
+function readDailyWindowState(file) {
   try {
-    if (!existsSync(MS_SCHEDULE_FILE)) return null;
-    const raw = readFileSync(MS_SCHEDULE_FILE, 'utf8');
+    if (!existsSync(file)) return null;
+    const raw = readFileSync(file, 'utf8');
     if (!raw.trim()) return null;
     const p = JSON.parse(raw);
     if (!p || !p.date || !p.target || !p.status) return null;
     return p;
   } catch { return null; }
 }
-function writeMsScheduleToday(state) {
+function writeDailyWindowState(file, state, label) {
   try {
-    mkdirSync(path.dirname(MS_SCHEDULE_FILE), { recursive: true });
-    writeFileSync(MS_SCHEDULE_FILE, JSON.stringify(state, null, 2) + '\n');
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(state, null, 2) + '\n');
   } catch (e) {
-    console.error(`[${datetime()}] Scheduler (MS): failed to persist schedule: ${e.message}`);
+    console.error(`[${datetime()}] Scheduler (${label}): failed to persist schedule: ${e.message}`);
   }
 }
-function pickMsTargetFor(dateKey, c) {
+function pickWindowTargetFor(dateKey, startHour, hours) {
   const [y, m, d] = dateKey.split('-').map(Number);
   const target = new Date(y, m - 1, d);
-  const startHour = c.msStart;
   // When picking for today and we're already inside the window, constrain
   // the random offset to the *remaining* window — otherwise a uniform pick
   // can land in the past on first boot mid-window, and the immediate
@@ -1908,9 +1929,9 @@ function pickMsTargetFor(dateKey, c) {
   // For a future day, the full window is fair game as before.
   const now = Date.now();
   const windowStart = new Date(y, m - 1, d, startHour, 0, 0, 0).getTime();
-  const windowEnd = windowStart + c.msHours * 3600 * 1000;
+  const windowEnd = windowStart + hours * 3600 * 1000;
   let minOffsetMin = 0;
-  let maxOffsetMin = c.msHours * 60;
+  let maxOffsetMin = hours * 60;
   if (dateKey === todayKey() && now > windowStart && now < windowEnd) {
     // 60s floor so the very first wake isn't a no-op tight-loop.
     minOffsetMin = Math.ceil((now - windowStart) / 60000) + 1;
@@ -1923,6 +1944,12 @@ function pickMsTargetFor(dateKey, c) {
   const offsetMinutes = minOffsetMin + Math.floor(Math.random() * span);
   target.setHours(startHour, offsetMinutes, 0, 0);
   return { date: dateKey, target: target.toISOString(), status: 'pending' };
+}
+function pickMsTargetFor(dateKey, c) {
+  return pickWindowTargetFor(dateKey, c.msStart, c.msHours);
+}
+function pickAwaTargetFor(dateKey, c) {
+  return pickWindowTargetFor(dateKey, c.awaStart, c.awaHours);
 }
 
 // Per-service last-success-run timestamps. Updated when service scripts
@@ -2213,6 +2240,50 @@ function computeMsWakeMs() {
   return 0;
 }
 
+function computeAwaWakeMs() {
+  const c = getSchedulerConfig();
+  const active = activeServices();
+  if (!active.has('alienware-arena') || c.awaHours <= 0) { awaTodayState = null; return 0; }
+
+  const now = Date.now();
+  for (let safety = 0; safety < 14; safety++) {
+    let st = readAwaScheduleToday();
+    const today = todayKey();
+    const needsFresh = !st
+      || st.date < today
+      || (st.date === today && (st.status === 'fired' || st.status === 'missed'));
+    if (needsFresh) {
+      const day = (!st || st.date < today) ? today : nextDayKey(today);
+      st = pickAwaTargetFor(day, c);
+      writeAwaScheduleToday(st);
+    }
+    awaTodayState = st;
+    const target = new Date(st.target).getTime();
+    if (!Number.isFinite(target)) {
+      st = pickAwaTargetFor(todayKey(), c);
+      writeAwaScheduleToday(st);
+      awaTodayState = st;
+      continue;
+    }
+    if (st.status === 'pending' && target <= now) {
+      st.status = 'missed';
+      writeAwaScheduleToday(st);
+      continue;
+    }
+    return Math.max(target - now, 60 * 1000);
+  }
+  console.error(`[${datetime()}] Scheduler (AWA): pick loop exhausted, disabling.`);
+  awaTodayState = null;
+  return 0;
+}
+
+function computeSteamGiftsWakeMs() {
+  const c = getSchedulerConfig();
+  const active = activeServices();
+  if (!active.has('steamgifts') || c.sgFrequencyMinutes <= 0) return 0;
+  return Math.max(c.sgFrequencyMinutes * 60 * 1000, 60 * 1000);
+}
+
 // Multi-subscriber wakeup set — both schedulerLoops park in sleepUntilWakeup,
 // and any of them must re-arm when config changes.
 const schedulerWakeups = new Set();
@@ -2338,10 +2409,56 @@ async function fireScheduledRun({ label, sites, extraEnv, postRun }) {
   });
 }
 
+const detachedRuns = new Map();
+function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
+  if (!sites || !sites.length) return false;
+  if (detachedRuns.has(label)) {
+    console.log(`[${datetime()}] Scheduler (${label}): previous run still active — skipping this tick.`);
+    return false;
+  }
+  const cmd = resolveClaimCommand({ manual: false, sites });
+  if (!cmd) {
+    console.log(`[${datetime()}] Scheduler (${label}): no command resolved — skipping.`);
+    return false;
+  }
+  const env = { ...process.env, NOWAIT: '1', ...extraEnv };
+  console.log(`[${datetime()}] Scheduler (${label}): starting detached run: ${cmd}`);
+  runLog.push(`[${datetime()}] Scheduler (${label}) detached run started: ${cmd}`);
+  const child = spawn('bash', ['-c', cmd], {
+    cwd: __panelDirname,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  detachedRuns.set(label, child);
+  const onData = data => {
+    const text = data.toString();
+    process.stdout.write(text);
+    runLog.push(text);
+    for (const m of text.matchAll(/\[run\]\s+service=([a-z0-9-]+)\s+ok\b/g)) {
+      recordLastRunSuccess(m[1]);
+    }
+  };
+  child.stdout.on('data', onData);
+  child.stderr.on('data', data => {
+    const text = data.toString();
+    process.stderr.write(text);
+    runLog.push(text);
+  });
+  child.on('close', code => {
+    detachedRuns.delete(label);
+    runLog.push(`[${datetime()}] Scheduler (${label}) detached run exited with code ${code}`);
+    console.log(`[${datetime()}] Scheduler (${label}): detached run exited with code ${code}.`);
+    if (code === 0 && typeof markFired === 'function') markFired();
+  });
+  return true;
+}
+
 function nonMsActiveSiteIds() {
   const active = activeServices();
   active.delete('microsoft');
   active.delete('microsoft-mobile');
+  active.delete('steamgifts');
+  active.delete('alienware-arena');
   return Array.from(active);
 }
 
@@ -2497,6 +2614,61 @@ async function msSchedulerLoop() {
         }
       }
     }
+  }
+}
+
+async function steamGiftsSchedulerLoop() {
+  while (true) {
+    const sleepMs = computeSteamGiftsWakeMs();
+    if (sleepMs <= 0) {
+      nextSteamGiftsRun = null;
+      console.log(`[${datetime()}] Scheduler (SteamGifts): disabled — waiting for config change.`);
+      await sleepUntilWakeup(2 ** 31 - 1);
+      continue;
+    }
+    nextSteamGiftsRun = new Date(Date.now() + sleepMs);
+    console.log(`[${datetime()}] Scheduler (SteamGifts): next run at ${datetime(nextSteamGiftsRun)}.`);
+    const how = await sleepUntilWakeup(sleepMs);
+    if (how === 'reload') continue;
+
+    if (!activeServices().has('steamgifts')) continue;
+    fireDetachedScheduledRun({
+      label: 'steamgifts',
+      sites: ['steamgifts'],
+    });
+  }
+}
+
+async function awaSchedulerLoop() {
+  while (true) {
+    const sleepMs = computeAwaWakeMs();
+    if (sleepMs <= 0) {
+      nextAwaRun = null;
+      console.log(`[${datetime()}] Scheduler (AWA): disabled — waiting for config change.`);
+      await sleepUntilWakeup(2 ** 31 - 1);
+      continue;
+    }
+    nextAwaRun = new Date(Date.now() + sleepMs);
+    console.log(`[${datetime()}] Scheduler (AWA): next run at ${datetime(nextAwaRun)}.`);
+    const how = await sleepUntilWakeup(sleepMs);
+    if (how === 'reload') continue;
+
+    const c = getSchedulerConfig();
+    if (!activeServices().has('alienware-arena') || c.awaHours <= 0) continue;
+    const st = readAwaScheduleToday();
+    if (!st || st.status !== 'pending') continue;
+
+    fireDetachedScheduledRun({
+      label: 'awa',
+      sites: ['alienware-arena'],
+      markFired: () => {
+        const cur = readAwaScheduleToday();
+        if (cur && cur.date === todayKey() && cur.status === 'pending') {
+          cur.status = 'fired';
+          writeAwaScheduleToday(cur);
+        }
+      },
+    });
   }
 }
 
@@ -2827,9 +2999,11 @@ async function getState() {
   const allLoggedIn = Object.entries(siteStatus)
     .filter(([id]) => active.has(id))
     .every(([, s]) => s.status === 'logged_in');
+
   // Always derive next-run timestamps from config so the UI never sits at
   // "Calculating…" before the loops populate their cached values.
   const sched = getSchedulerConfig();
+
   // Parent-gate semantic (v2.11.9): only the 'microsoft' toggle controls
   // whether MS Rewards runs. microsoft-mobile is a SUB-toggle inside the
   // MS session (whether to run the mobile pass in addition to desktop),
@@ -2839,21 +3013,66 @@ async function getState() {
   // users who never touched it) kept MS running even when parent was
   // toggled off. Reported live 2026-08-08.
   const msActive = active.has('microsoft');
+
+  const sgScheduled =
+    active.has('steamgifts') && sched.sgFrequencyMinutes > 0;
+
+  const awaScheduled =
+    active.has('alienware-arena') && sched.awaHours > 0;
+
   const legacyMode = legacyCombinedMode(sched, active);
   const dailyAnchored = !!sched.dailyStartTime;
   const mainEnabled = legacyMode || dailyAnchored || sched.loop > 0;
   const msScheduled = !legacyMode && msActive && sched.msHours > 0;
-  const schedEnabled = mainEnabled || msScheduled;
+  const schedEnabled =
+    mainEnabled || msScheduled || sgScheduled || awaScheduled;
 
-  const computedMain = mainEnabled ? new Date(Date.now() + computeMainWakeMs()) : null;
-  const computedMs = msScheduled ? new Date(Date.now() + computeMsWakeMs()) : null;
+  const computedMain =
+    mainEnabled
+      ? new Date(Date.now() + computeMainWakeMs())
+      : null;
+
+  const computedMs =
+    msScheduled
+      ? new Date(Date.now() + computeMsWakeMs())
+      : null;
+
+  const computedSg =
+    sgScheduled
+      ? new Date(Date.now() + computeSteamGiftsWakeMs())
+      : null;
+
+  const computedAwa =
+    awaScheduled
+      ? new Date(Date.now() + computeAwaWakeMs())
+      : null;
+
   const effectiveMain = nextMainRun || computedMain;
   const effectiveMs = nextMsRun || computedMs;
-  const effectiveNext = [effectiveMain, effectiveMs]
-    .filter(Boolean)
-    .reduce((a, b) => (!a || b.getTime() < a.getTime() ? b : a), null);
+  const effectiveSg = nextSteamGiftsRun || computedSg;
+  const effectiveAwa = nextAwaRun || computedAwa;
 
-  const msState = msScheduled ? (msTodayState || readMsScheduleToday()) : null;
+  const effectiveNext = [
+    effectiveMain,
+    effectiveMs,
+    effectiveSg,
+    effectiveAwa,
+  ]
+    .filter(Boolean)
+    .reduce(
+      (a, b) => (!a || b.getTime() < a.getTime() ? b : a),
+      null,
+    );
+
+  const msState =
+    msScheduled
+      ? (msTodayState || readMsScheduleToday())
+      : null;
+
+  const awaState =
+    awaScheduled
+      ? (awaTodayState || readAwaScheduleToday())
+      : null;
 
   return {
     sites: Object.entries(SITES).map(([id, site]) => ({
@@ -2893,21 +3112,28 @@ async function getState() {
     nextScheduledRun: effectiveNext ? datetime(effectiveNext) : null,
     nextMainRun: effectiveMain ? datetime(effectiveMain) : null,
     nextMsRun: effectiveMs ? datetime(effectiveMs) : null,
+    nextSteamGiftsRun: effectiveSg ? datetime(effectiveSg) : null,
+    nextAwaRun: effectiveAwa ? datetime(effectiveAwa) : null,
     // ISO timestamps (UTC with Z) — unambiguous across browser/server TZs.
     // Panel uses these for both display formatting and countdown math so a
     // browser in a different TZ from the server sees the right wall time.
     nextScheduledRunIso: effectiveNext ? effectiveNext.toISOString() : null,
     nextMainRunIso: effectiveMain ? effectiveMain.toISOString() : null,
     nextMsRunIso: effectiveMs ? effectiveMs.toISOString() : null,
+    nextSteamGiftsRunIso: effectiveSg ? effectiveSg.toISOString() : null,
+    nextAwaRunIso: effectiveAwa ? effectiveAwa.toISOString() : null,
     serverTimezone: (() => {
       try { return Intl.DateTimeFormat().resolvedOptions().timeZone; }
       catch { return null; }
     })(),
     serverTimeIso: new Date().toISOString(),
     msTodayStatus: msState ? msState.status : null,
+    awaTodayStatus: awaState ? awaState.status : null,
     legacyCombinedMode: legacyMode,
     mainEnabled,
     msScheduled,
+    sgScheduled,
+    awaScheduled,
     loopEnabled: schedEnabled,
     schedulerPaused: isSchedulerPaused(),
     schedulerPausedAt: schedulerPausedAt(),
@@ -2921,6 +3147,9 @@ async function getState() {
     githubUsername: (describeConfig().effective.github?.username || ''),
     msScheduleHours: sched.msHours,
     msScheduleStart: sched.msStart,
+    sgFrequencyMinutes: sched.sgFrequencyMinutes,
+    awaScheduleHours: sched.awaHours,
+    awaScheduleStart: sched.awaStart,
     msAnchored: legacyMode, // legacy alias — UI now reads legacyCombinedMode/msScheduled
     batchRedeem: batchRedeem ? {
       phase: batchRedeem.phase,
@@ -4169,6 +4398,7 @@ const PANEL_HTML = `<!DOCTYPE html>
   <div class="steps sessions-only" id="steps"></div>
   <div class="status-strip sessions-only" id="statusStrip" onclick="toggleSessionsCollapsed()" title="Click to collapse session details"></div>
   <div class="site-cards sessions-only" id="siteCards"></div>
+  <div class="watcher-section sessions-only" id="customFarmCards" style="display:none"></div>
   <div class="watcher-section sessions-only" id="watcherCards" style="display:none"></div>
   <div class="available-drawer sessions-only" id="availableDrawer" style="display:none"></div>
   <div class="sessions-only" id="batchRedeemInfo" style="display:none; margin-top: 10px;"></div>
@@ -6912,8 +7142,39 @@ function renderScheduleTab() {
       parts.push('<div class="sched-row"><div class="sched-label">Interval · MS Rewards</div><div class="sched-value muted">Random within ' + fmtH(s) + ' &rarr; ' + fmtH((Number(s) + Number(w)) % 24) + ' daily</div></div>');
     }
 
-    if (!state.mainEnabled && !state.msScheduled) {
-      parts.push('<div class="sched-row"><div class="sched-label">Status</div><div class="sched-value muted">Scheduler disabled — set START_TIME, LOOP, or MS_SCHEDULE_HOURS to enable.</div></div>');
+    if (state.sgScheduled) {
+      if (state.nextSteamGiftsRun) {
+        parts.push(
+          '<div class="sched-row"><div class="sched-label">Next run · SteamGifts</div>' +
+          '<div><span class="sched-value big" title="' + state.nextSteamGiftsRun + '">' + formatScheduleWallTime(state.nextSteamGiftsRunIso, state.nextSteamGiftsRun) + '</span>' +
+          tzAnnotation(state.nextSteamGiftsRunIso) +
+          '<span class="sched-count" id="sgCountdown"></span></div></div>'
+        );
+      }
+      parts.push('<div class="sched-row"><div class="sched-label">Interval · SteamGifts</div><div class="sched-value muted">Every ' + state.sgFrequencyMinutes + ' minute' + (Number(state.sgFrequencyMinutes) === 1 ? '' : 's') + ', independent from claimers</div></div>');
+    }
+
+    if (state.awaScheduled) {
+      const statusBadge = state.awaTodayStatus === 'missed'
+        ? ' <span class="muted">(missed today — Run manually from the AWA card)</span>'
+        : state.awaTodayStatus === 'fired'
+          ? ' <span class="muted">(today already fired)</span>'
+          : '';
+      if (state.nextAwaRun) {
+        parts.push(
+          '<div class="sched-row"><div class="sched-label">Next run · Alienware Arena</div>' +
+          '<div><span class="sched-value big" title="' + state.nextAwaRun + '">' + formatScheduleWallTime(state.nextAwaRunIso, state.nextAwaRun) + '</span>' +
+          tzAnnotation(state.nextAwaRunIso) +
+          '<span class="sched-count" id="awaCountdown"></span>' + statusBadge + '</div></div>'
+        );
+      }
+      const s = state.awaScheduleStart || 0;
+      const w = state.awaScheduleHours;
+      parts.push('<div class="sched-row"><div class="sched-label">Interval · Alienware Arena</div><div class="sched-value muted">Random within ' + fmtH(s) + ' &rarr; ' + fmtH((Number(s) + Number(w)) % 24) + ' daily</div></div>');
+    }
+
+    if (!state.mainEnabled && !state.msScheduled && !state.sgScheduled && !state.awaScheduled) {
+      parts.push('<div class="sched-row"><div class="sched-label">Status</div><div class="sched-value muted">Scheduler disabled — set START_TIME, LOOP, MS/AWA schedule hours, or SteamGifts frequency to enable.</div></div>');
     }
   }
 
@@ -6926,6 +7187,8 @@ function renderScheduleTab() {
   const activeGames = sites.filter(s => s.active && GAME_IDS.has(s.id));
   const hasAE = sites.some(s => s.active && s.id === 'aliexpress');
   const hasMS = sites.some(s => s.active && s.id === 'microsoft');
+  const hasSG = sites.some(s => s.active && s.id === 'steamgifts');
+  const hasAWA = sites.some(s => s.active && s.id === 'alienware-arena');
   // Watchers are in state.watchers (not state.sites). They run on each
   // main-chain fire as part of the bash command — listing them in the
   // Services breakdown so the Schedule tab reflects the actual daily run.
@@ -6937,6 +7200,7 @@ function renderScheduleTab() {
   const byName = (a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
   standardWatchers.sort(byName);
   const activeCount = activeGames.length + (hasAE ? 1 : 0) + (hasMS ? 1 : 0)
+    + (hasSG ? 1 : 0) + (hasAWA ? 1 : 0)
     + standardWatchers.length + (lenovoWatcher ? 1 : 0);
 
   const svcLines = [];
@@ -6954,6 +7218,12 @@ function renderScheduleTab() {
     } else {
       svcLines.push('<b>Microsoft Rewards</b> — runs searches immediately (no window)');
     }
+  }
+  if (hasSG) {
+    svcLines.push('<b>SteamGifts</b> — frequent giveaway/points checker <span class="muted">(independent interval)</span>');
+  }
+  if (hasAWA) {
+    svcLines.push('<b>Alienware Arena</b> — AWA/Twitch farming <span class="muted">(independent daily window)</span>');
   }
   if (standardWatchers.length) {
     svcLines.push('<b>' + standardWatchers.map(w => escapeHtml(w.name)).join(', ') + '</b> — watch and notify on new free items <span class="muted">(no auto-claim)</span>');
@@ -7020,6 +7290,8 @@ function updateScheduleCountdown() {
   apply('schedCountdown', state.nextScheduledRunIso, state.nextScheduledRun);
   apply('mainCountdown',  state.nextMainRunIso,      state.nextMainRun);
   apply('msCountdown',    state.nextMsRunIso,        state.nextMsRun);
+  apply('sgCountdown',    state.nextSteamGiftsRunIso, state.nextSteamGiftsRun);
+  apply('awaCountdown',   state.nextAwaRunIso,        state.nextAwaRun);
 }
 
 // Format an ISO timestamp into a server-local-tz wall clock for display.
@@ -7888,10 +8160,12 @@ function render() {
   // Sort each group alphabetically by name so the visual order is stable
   // and predictable across all card groupings on the Sessions tab.
   const byName = (a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
-  const activeCards = state.sites.filter(s => s.active !== false).slice().sort(byName);
+  const customFarmIds = new Set(['steamgifts', 'alienware-arena']);
+  const activeCards = state.sites.filter(s => s.active !== false && !customFarmIds.has(s.id)).slice().sort(byName);
+  const customFarmCards = state.sites.filter(s => s.active !== false && customFarmIds.has(s.id)).slice().sort(byName);
   const inactiveCards = state.sites.filter(s => s.active === false).slice().sort(byName);
 
-  cards.innerHTML = activeCards.map(s => {
+  const renderSessionCard = s => {
     const dotClass = s.status === 'logged_in' ? 'logged-in' : s.status === 'not_logged_in' ? 'not-logged-in' : s.status === 'error' ? 'error' : 'unknown';
     const statusClass = dotClass;
     let statusText = 'Not checked';
@@ -7941,7 +8215,22 @@ function render() {
         '<button class="btn btn-run-single" onclick="runSite(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Run this service now">Run</button>' +
       '</div>' +
     '</div>';
-  }).join('');
+  };
+
+  cards.innerHTML = activeCards.map(renderSessionCard).join('');
+
+  const customFarmEl = document.getElementById('customFarmCards');
+  if (customFarmEl) {
+    if (customFarmCards.length === 0 || sessionsCollapsed || state.activeBrowser) {
+      customFarmEl.style.display = 'none';
+      customFarmEl.innerHTML = '';
+    } else {
+      customFarmEl.style.display = 'block';
+      customFarmEl.innerHTML =
+        '<div class="watcher-section-title">Custom farming services</div>' +
+        '<div class="site-cards" style="margin-top:10px">' + customFarmCards.map(renderSessionCard).join('') + '</div>';
+    }
+  }
 
   // Compact cards for active watch-only collectors. Smaller than full
   // session cards (no dot, no Login/Check, just a Run button) so the
@@ -8504,9 +8793,10 @@ function openRunPicker() {
   //   microsoft* / ae → 'points'
   //   else            → 'game'
   // scheduleKind comes from state.sites (added 2.5.3-ish).
-  const groups = { game: [], points: [], watch: [] };
+  const groups = { game: [], points: [], custom: [], watch: [] };
   active.forEach(s => {
     const cat = s.scheduleKind === 'watch-only' ? 'watch'
+      : (s.id === 'steamgifts' || s.id === 'alienware-arena') ? 'custom'
       : (s.id === 'aliexpress' || (s.id || '').indexOf('microsoft') === 0) ? 'points'
       : 'game';
     groups[cat].push(s);
@@ -8543,6 +8833,7 @@ function openRunPicker() {
   const pointsGroup = groups.points.concat(groups.game.filter(s => s.id === 'aliexpress'));
   pointsGroup.sort(byName);
   html += renderGroup('Point / coin collectors', pointsGroup);
+  html += renderGroup('Custom farming services', groups.custom);
   html += renderGroup('Watchers', groups.watch);
   if (!html) html = '<div class="logs-empty" style="padding:12px">No active services. Enable some in Settings → Services first.</div>';
   html += '<div class="rp-shortcuts">' +
@@ -10386,6 +10677,12 @@ server.listen(PANEL_PORT, async () => {
   });
   msSchedulerLoop().catch(err => {
     console.error(`[${datetime()}] Scheduler (MS) crashed:`, err);
+  });
+  steamGiftsSchedulerLoop().catch(err => {
+    console.error(`[${datetime()}] Scheduler (SteamGifts) crashed:`, err);
+  });
+  awaSchedulerLoop().catch(err => {
+    console.error(`[${datetime()}] Scheduler (AWA) crashed:`, err);
   });
   lenovoSchedulerLoop().catch(err => {
     console.error(`[${datetime()}] Scheduler (Lenovo) crashed:`, err);

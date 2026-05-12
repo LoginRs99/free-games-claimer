@@ -122,6 +122,11 @@ export const CONFIG_SCHEMA = [
       if (new Set(v).size !== v.length) return 'duplicate days not allowed';
       return null;
     } },
+  { path: 'scheduler.sgFrequencyMinutes', env: 'SG_FREQUENCY_MINUTES', type: 'number', default: 60, coerce: v => {
+    const n = Number(v); return Number.isFinite(n) ? Math.max(0, n) : 60;
+  } },
+  { path: 'scheduler.awaScheduleHours', env: 'AWA_SCHEDULE_HOURS', type: 'number', default: 0, coerce: v => Number(v) || 0 },
+  { path: 'scheduler.awaScheduleStart', env: 'AWA_SCHEDULE_START', type: 'number', default: 8, coerce: v => Number(v) || 0 },
   // 0 = off, 1 = run claim chain after startup auto-check (panel keeps
   // running), 2 = run + exit (one-shot for Sablier / cron / `docker run --rm`).
   { path: 'scheduler.runOnStartup',    env: 'RUN_ON_STARTUP',    type: 'number',  default: 0, coerce: v => {
@@ -440,11 +445,14 @@ export function getSchedulerConfig() {
   let days = Array.isArray(s.dailyStartDays) ? s.dailyStartDays.filter(n => Number.isInteger(n) && n >= 0 && n <= 6) : null;
   if (!days || days.length === 0) days = [0, 1, 2, 3, 4, 5, 6];
   return {
-    loop:            s.loopSeconds     ?? 0,
-    dailyStartTime:  s.dailyStartTime  ?? '',
-    msHours:         s.msScheduleHours ?? 0,
-    msStart:         s.msScheduleStart ?? 8,
-    dailyStartDays:  days,
+    loop:               s.loopSeconds       ?? 0,
+    dailyStartTime:     s.dailyStartTime    ?? '',
+    msHours:            s.msScheduleHours   ?? 0,
+    msStart:            s.msScheduleStart   ?? 8,
+    dailyStartDays:     days,
+    sgFrequencyMinutes: s.sgFrequencyMinutes ?? 60,
+    awaHours:           s.awaScheduleHours  ?? 0,
+    awaStart:           s.awaScheduleStart  ?? 8,
   };
 }
 

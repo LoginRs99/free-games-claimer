@@ -27,6 +27,8 @@
 //   scheduleKind    'daily-chain' (runs in the main scheduler chain),
 //                   'daily-window' (its own random-pick scheduler loop —
 //                   Microsoft today), or 'watch-only' (Ubisoft pattern).
+//                   Custom local services may also use 'frequent-check'
+//                   for interval-based loops outside the main chain.
 //   features        named opt-ins the engine reads to enable per-site
 //                   special handling without hard-coding the service id.
 //                   Examples (consumers added in later commits):
@@ -752,7 +754,7 @@ export const SITES = [
     activeEnv: 'SG_ACTIVE',
     linkedWith: null,
     claimDbFile: null,
-    scheduleKind: 'daily-chain',
+    scheduleKind: 'frequent-check',
     features: ['captcha-marker'],
     configFields: [
       { key: 'giftType', env: 'SG_GIFT_TYPE', type: 'string', default: 'Special Mode',
@@ -780,6 +782,10 @@ export const SITES = [
         label: 'Delay between entries',
         unit: 'seconds',
         coerce: { kind: 'numberBounded', min: 5, fallback: 120 } },
+      { schedulerScope: true, path: 'scheduler.sgFrequencyMinutes',
+        label: 'SteamGifts check frequency',
+        unit: 'minutes',
+        hint: 'Runs SteamGifts independently from the main daily claim chain. Set 0 to disable the frequent checker while leaving manual Run available.' },
     ],
     async checkLogin(page) {
       try {
@@ -811,7 +817,7 @@ export const SITES = [
     activeEnv: 'AWA_ACTIVE',
     linkedWith: null,
     claimDbFile: null,
-    scheduleKind: 'daily-chain',
+    scheduleKind: 'daily-window',
     features: ['captcha-marker'],
     configFields: [
       { key: 'presenceMinutes', env: 'AWA_PRESENCE_MINUTES', type: 'number', default: 30,
@@ -822,6 +828,11 @@ export const SITES = [
         label: 'Daily watch-time target',
         unit: 'minutes',
         coerce: { kind: 'numberBounded', min: 10, fallback: 250 } },
+      { key: 'arpTarget', env: 'AWA_ARP_TARGET', type: 'number', default: 0,
+        label: 'ARP target',
+        unit: 'ARP',
+        hint: 'When the detected ARP balance is at or above this value, scheduled Alienware Arena runs skip. 0 disables the target gate.',
+        coerce: { kind: 'numberBounded', min: 0, fallback: 0 } },
       { key: 'watchChunkMinutes', env: 'AWA_WATCH_CHUNK_MINUTES', type: 'number', default: 30,
         label: 'Twitch watch chunk',
         unit: 'minutes',
@@ -831,6 +842,13 @@ export const SITES = [
         default: '3llebelle,BiffleTV,PirateGray,FooYa,RogersBase,TheGeekEntry,Layria,MatthewSantoro,Lovinurstyle,Liddles,TrishaHershberger,Mactics,MoonlitCharlie',
         label: 'Twitch streamers',
         hint: 'Comma-separated Twitch logins. Set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET env vars for accurate live checks.' },
+      { schedulerScope: true, path: 'scheduler.awaScheduleHours',
+        label: 'AWA schedule window width',
+        unit: 'hours',
+        hint: 'Independent daily Alienware Arena window. Works like the Microsoft Rewards window.' },
+      { schedulerScope: true, path: 'scheduler.awaScheduleStart',
+        label: 'AWA schedule window start',
+        kind: 'hour-of-day' },
     ],
     async checkLogin(page) {
       try {

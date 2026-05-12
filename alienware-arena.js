@@ -13,6 +13,7 @@ const db = await jsonDb('alienware-arena.json', { days: {} });
 log.section(`${SITE_NAME} (v${siteVersion(SITE_ID)})`);
 log.status('AWA presence', `${cfg.awa_presence_minutes}m`);
 log.status('Daily target', `${cfg.awa_daily_target_minutes}m`);
+if (cfg.awa_arp_target > 0) log.status('ARP target', cfg.awa_arp_target);
 
 const context = await chromium.launchPersistentContext(cfg.dir.browser + '-alienware-arena', {
   headless: cfg.headless,
@@ -39,6 +40,7 @@ const today = datetime().slice(0, 10);
 db.data.days[today] ||= { totalMinutes: 0, sessions: [] };
 
 let user = 'member';
+let arpBalance = null;
 let twitchToken = null;
 let twitchTokenExpiresAt = 0;
 
@@ -89,11 +91,24 @@ async function readAwaLogin() {
       'a[href="/quests"]',
     ].join(', '));
     const user = document.querySelector('.media-body, .username, [class*="username"]')?.textContent?.trim() || null;
-    return { loggedIn, user, title: document.title };
+    const text = document.body?.innerText || '';
+    const arpMatch = text.match(/(?:ARP|Arena Rewards Points)[^\d]{0,20}([\d,]+)/i)
+      || text.match(/([\d,]+)\s*ARP/i);
+    const arp = arpMatch ? Number(arpMatch[1].replace(/,/g, '')) : null;
+    return { loggedIn, user, arp, title: document.title };
   });
 
   if (result.user) user = result.user;
+  if (Number.isFinite(result.arp)) {
+    arpBalance = result.arp;
+    db.data.latestArp = { value: arpBalance, time: datetime() };
+    log.status('ARP', arpBalance);
+  }
   return result.loggedIn;
+}
+
+function arpTargetReached() {
+  return cfg.awa_arp_target > 0 && Number.isFinite(arpBalance) && arpBalance >= cfg.awa_arp_target;
 }
 
 async function ensureAwaLogin() {
@@ -281,6 +296,9 @@ async function runTwitchSessions() {
 try {
   if (!await ensureAwaLogin()) {
     process.exitCode = 1;
+  } else if (arpTargetReached()) {
+    log.info(`ARP target reached: ${arpBalance}/${cfg.awa_arp_target}`);
+    log.summary({ siteId: SITE_ID, claimed: 0, skipped: 0, display: 'pointsEarned', pointsEarned: 0 });
   } else if (todayTotal() >= cfg.awa_daily_target_minutes) {
     log.info(`Daily target already met: ${todayTotal()}/${cfg.awa_daily_target_minutes} minutes`);
   } else {
@@ -288,12 +306,13 @@ try {
     if (!awaOk) throw new Error('AWA presence failed');
 
     const twitch = await runTwitchSessions();
+    await readAwaLogin().catch(() => {});
     log.summary({
       siteId: SITE_ID,
       claimed: twitch.watched,
       skipped: twitch.offline,
       display: 'tracked',
-      tracked: Math.round(todayTotal()),
+      tracked: Number.isFinite(arpBalance) ? arpBalance : Math.round(todayTotal()),
       failed: twitch.errors,
     });
   }
@@ -305,7 +324,8 @@ try {
 } finally {
   await db.write();
   if (notifyItems.length || process.exitCode) {
-    const status = `${Math.round(todayTotal())}/${cfg.awa_daily_target_minutes} minutes today`;
+    const arp = Number.isFinite(arpBalance) ? ` · ${arpBalance}${cfg.awa_arp_target > 0 ? '/' + cfg.awa_arp_target : ''} ARP` : '';
+    const status = `${Math.round(todayTotal())}/${cfg.awa_daily_target_minutes} minutes today${arp}`;
     const body = notifyItems.length ? html_game_list(notifyItems) : status;
     await notify(`alienware-arena (${user}):<br>${status}<br>${body}`, { kind: process.exitCode ? 'action' : 'summary' });
   }

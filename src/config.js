@@ -94,7 +94,7 @@ export const cfg = {
   daily_start_time: sched.dailyStartTime ?? '',
   ms_schedule_hours: sched.msScheduleHours ?? 0,
   ms_schedule_start: sched.msScheduleStart ?? 8,
-  sg_frequency_minutes: sched.sgFrequencyMinutes ?? 60,
+  sg_frequency_minutes: sched.sgFrequencyMinutes ?? 120,
   awa_schedule_hours: sched.awaScheduleHours ?? 0,
   awa_schedule_start: sched.awaScheduleStart ?? 8,
   // 0 = off, 1 = run on startup, 2 = run on startup then exit (one-shot).
@@ -149,6 +149,7 @@ export const cfg = {
   sg_special_stages: sg.specialStages || 'Wishlist,Group,Recommended,DLC',
   sg_ignored_words: sg.ignoredWords || 'furry,mahjong,hentai,waifu,sex,puzzle,exe,pussy,meme',
   sg_entry_delay_sec: sg.entryDelaySec ?? 120,
+  sg_cookie: sg.cookie || process.env.SG_COOKIE || '',
   // alienware arena / AWA Twitch watch time
   awa_presence_minutes: awa.presenceMinutes ?? 30,
   awa_daily_target_minutes: awa.dailyTargetMinutes ?? 250,

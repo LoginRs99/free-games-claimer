@@ -122,7 +122,7 @@ export const CONFIG_SCHEMA = [
       if (new Set(v).size !== v.length) return 'duplicate days not allowed';
       return null;
     } },
-  { path: 'scheduler.sgFrequencyMinutes', env: 'SG_FREQUENCY_MINUTES', type: 'number', default: 60, coerce: v => {
+  { path: 'scheduler.sgFrequencyMinutes', env: 'SG_FREQUENCY_MINUTES', type: 'number', default: 120, coerce: v => {
     const n = Number(v); return Number.isFinite(n) ? Math.max(0, n) : 60;
   } },
   { path: 'scheduler.awaScheduleHours', env: 'AWA_SCHEDULE_HOURS', type: 'number', default: 0, coerce: v => Number(v) || 0 },
@@ -450,7 +450,7 @@ export function getSchedulerConfig() {
     msHours:            s.msScheduleHours   ?? 0,
     msStart:            s.msScheduleStart   ?? 8,
     dailyStartDays:     days,
-    sgFrequencyMinutes: s.sgFrequencyMinutes ?? 60,
+    sgFrequencyMinutes: s.sgFrequencyMinutes ?? 120,
     awaHours:           s.awaScheduleHours  ?? 0,
     awaStart:           s.awaScheduleStart  ?? 8,
   };

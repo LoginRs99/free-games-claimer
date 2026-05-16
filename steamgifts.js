@@ -52,6 +52,31 @@ let user = 'unknown';
 let xsrfToken = null;
 let points = 0;
 
+function normalizePhpSessid(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^PHPSESSID=/i, '')
+    .split(';')[0]
+    .trim();
+}
+
+async function seedPhpSessidCookie() {
+  const value = normalizePhpSessid(cfg.sg_cookie);
+  if (!value) return false;
+
+  await context.addCookies([{
+    name: 'PHPSESSID',
+    value,
+    domain: '.steamgifts.com',
+    path: '/',
+    httpOnly: true,
+    secure: true,
+    sameSite: 'Lax',
+  }]);
+  log.status('Cookie auth', 'PHPSESSID from config');
+  return true;
+}
+
 const ignoredWords = cfg.sg_ignored_words
   .split(',')
   .map(s => s.trim().toLowerCase())
@@ -108,11 +133,14 @@ async function readSession() {
 }
 
 async function login() {
+  const seededCookie = await seedPhpSessidCookie();
   while (!(await readSession()).loggedIn) {
     log.warn('Not signed in to SteamGifts');
     if (cfg.nowait) process.exit(1);
 
-    await notify('steamgifts: no longer signed in. Open the Sessions tab/noVNC and sign in with Steam.');
+    await notify(seededCookie
+      ? 'steamgifts: configured PHPSESSID is expired or invalid. Update SG_COOKIE in Settings, or open the Sessions tab/noVNC and sign in with Steam.'
+      : 'steamgifts: no longer signed in. Add SG_COOKIE in Settings, or open the Sessions tab/noVNC and sign in with Steam.');
     if (!cfg.debug) context.setDefaultTimeout(cfg.login_timeout);
     log.status('Login timeout', `${cfg.login_timeout / 1000}s`);
 

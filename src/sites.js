@@ -845,6 +845,9 @@ export const SITES = [
     scheduleKind: 'frequent-check',
     features: ['captcha-marker'],
     configFields: [
+      { key: 'cookie', env: 'SG_COOKIE', type: 'string', default: '',
+        label: 'PHPSESSID cookie',
+        hint: 'Optional. Paste only the raw SteamGifts PHPSESSID value, or PHPSESSID=value; lets SteamGifts run without manual browser login.' },
       { key: 'giftType', env: 'SG_GIFT_TYPE', type: 'string', default: 'Special Mode',
         label: 'Gift type',
         hint: 'Allowed: Special Mode, All, Wishlist, Recommended, Copies, DLC, Group, New.' },
@@ -873,10 +876,22 @@ export const SITES = [
       { schedulerScope: true, path: 'scheduler.sgFrequencyMinutes',
         label: 'SteamGifts check frequency',
         unit: 'minutes',
-        hint: 'Runs SteamGifts independently from the main daily claim chain. Set 0 to disable the frequent checker while leaving manual Run available.' },
+        hint: 'Runs SteamGifts independently from the main daily claim chain. Default is 120 minutes; set 240 for 4 hours, or 0 to disable the frequent checker while leaving manual Run available.' },
     ],
     async checkLogin(page) {
       try {
+        const cookie = String(cfg.sg_cookie || '').trim().replace(/^PHPSESSID=/i, '').split(';')[0].trim();
+        if (cookie) {
+          await page.context().addCookies([{
+            name: 'PHPSESSID',
+            value: cookie,
+            domain: '.steamgifts.com',
+            path: '/',
+            httpOnly: true,
+            secure: true,
+            sameSite: 'Lax',
+          }]);
+        }
         await page.goto('https://www.steamgifts.com/', { waitUntil: 'domcontentloaded', timeout: 20000 });
         await page.waitForTimeout(2000);
         const points = await page.locator('.nav__points').first().innerText({ timeout: 5000 }).catch(() => null);

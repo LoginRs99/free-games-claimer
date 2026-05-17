@@ -8424,7 +8424,13 @@ async function runSite(siteId) {
 
 async function runAlienwareArena() {
   const answer = window.prompt(
-    'Alienware Arena run mode:\n\n1 = AWA presence + Twitch\n2 = AWA presence only\n3 = Twitch only',
+    [
+      'Alienware Arena run mode:',
+      '',
+      '1 = AWA presence + Twitch',
+      '2 = AWA presence only',
+      '3 = Twitch only',
+    ].join(String.fromCharCode(10)),
     '1',
   );
   if (answer === null) return;

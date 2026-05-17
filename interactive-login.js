@@ -7851,9 +7851,12 @@ function render() {
       : '';
     const independentRun = customFarmIds.has(s.id);
     const runDisabled = s.detachedRunning || (disabled && !(independentRun && !busy && !state.activeBrowser));
+    const runHandler = s.id === 'alienware-arena'
+      ? 'runAlienwareArena()'
+      : 'runSite(\\'' + s.id + '\\')';
     const runButton = s.detachedRunning
       ? '<button class="btn btn-stop" onclick="stopDetachedSite(\\'' + s.id + '\\')" title="Stop this background service run">Stop</button>'
-      : '<button class="btn btn-run-single" onclick="runSite(\\'' + s.id + '\\')" ' + (runDisabled ? 'disabled' : '') + ' title="Run this service now">Run</button>';
+      : '<button class="btn btn-run-single" onclick="' + runHandler + '" ' + (runDisabled ? 'disabled' : '') + ' title="Run this service now">Run</button>';
     // Site-link target needs both target="_blank" (open in new tab when
     // the panel is at top-level) AND target="_top" (navigate the parent
     // tab when iframed inside Organizr / similar). The latter is the
@@ -8419,6 +8422,34 @@ async function runSite(siteId) {
   await refreshState();
 }
 
+async function runAlienwareArena() {
+  const answer = window.prompt(
+    'Alienware Arena run mode:\n\n1 = AWA presence + Twitch\n2 = AWA presence only\n3 = Twitch only',
+    '1',
+  );
+  if (answer === null) return;
+  const mode = ({ '1': 'full', '2': 'presence', '3': 'twitch' }[String(answer).trim().toLowerCase()])
+    || ({ full: 'full', both: 'full', all: 'full', presence: 'presence', afk: 'presence', twitch: 'twitch' }[String(answer).trim().toLowerCase()]);
+  if (!mode) {
+    showToast('Choose 1, 2, or 3 for Alienware Arena run mode.', 'error', 5000);
+    return;
+  }
+
+  const siteName = state.sites.find(s => s.id === 'alienware-arena')?.name || 'Alienware Arena';
+  busy = true; render();
+  try {
+    const r = await api('POST', '/run-service', { site: 'alienware-arena', mode });
+    if (r && r.success === false) {
+      showToast(r.error || 'Run failed', 'error', 5000);
+    } else {
+      const label = mode === 'presence' ? 'AWA presence only' : mode === 'twitch' ? 'Twitch only' : 'AWA presence + Twitch';
+      showToast('Started ' + siteName + ' (' + label + ') — open the Logs tab to watch output.', 'success', 4000);
+    }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+  busy = false;
+  await refreshState();
+}
+
 async function stopDetachedSite(siteId) {
   const siteName = state.sites.find(s => s.id === siteId)?.name || siteId;
   try {
@@ -8974,14 +9005,24 @@ const server = http.createServer(async (req, res) => {
       try {
         const body = await parseBody(req);
         const site = body && body.site;
+        const mode = body && body.mode;
         if (!site || typeof site !== 'string') {
           sendJson(res, { success: false, error: 'site required (e.g. {"site": "microsoft"})' }, 400);
           return;
         }
         if (INDEPENDENT_SCHEDULED_SITE_IDS.has(site)) {
+          const extraEnv = {};
+          if (site === 'alienware-arena') {
+            if (mode != null && !['full', 'presence', 'twitch'].includes(mode)) {
+              sendJson(res, { success: false, error: 'mode must be full, presence, or twitch' }, 400);
+              return;
+            }
+            if (mode) extraEnv.AWA_RUN_MODE = mode;
+          }
           const result = fireDetachedScheduledRun({
             label: site,
             sites: [site],
+            extraEnv,
           });
           sendJson(res, result, result.success ? 200 : 409);
           return;

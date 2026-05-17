@@ -6,13 +6,17 @@ import { siteVersion } from './src/sites.js';
 const SITE_ID = 'alienware-arena';
 const SITE_NAME = 'Alienware Arena';
 const AWA_URL = 'https://eu.alienwarearena.com/control-center';
+const RUN_MODES = new Set(['full', 'presence', 'twitch']);
+const RUN_MODE = RUN_MODES.has(process.env.AWA_RUN_MODE) ? process.env.AWA_RUN_MODE : 'full';
 
 const screenshot = (...a) => resolve(cfg.dir.screenshots, SITE_ID, ...a);
 const db = await jsonDb('alienware-arena.json', { days: {} });
 
 log.section(`${SITE_NAME} (v${siteVersion(SITE_ID)})`);
+log.status('Run mode', RUN_MODE === 'presence' ? 'AWA presence only' : RUN_MODE === 'twitch' ? 'Twitch only' : 'AWA presence + Twitch');
 log.status('AWA presence', `${cfg.awa_presence_minutes}m`);
-log.status('Daily target', `${cfg.awa_daily_target_minutes}m`);
+log.status('Twitch target', `${cfg.awa_daily_target_minutes}m`);
+log.status('Live recheck', `${cfg.awa_twitch_recheck_minutes}m`);
 if (cfg.awa_arp_target > 0) log.status('ARP target', cfg.awa_arp_target);
 
 const context = await chromium.launchPersistentContext(cfg.dir.browser + '-alienware-arena', {
@@ -69,6 +73,12 @@ function logSession(platform, details, minutes) {
 
 function todayTotal() {
   return db.data.days[today]?.totalMinutes || 0;
+}
+
+function todayTwitchTotal() {
+  return (db.data.days[today]?.sessions || [])
+    .filter(s => s.platform === 'Twitch')
+    .reduce((sum, s) => sum + (Number(s.minutes) || 0), 0);
 }
 
 async function captchaVisible() {
@@ -210,8 +220,8 @@ async function isStreamerLive(streamer) {
     return null;
   });
   if (!token) {
-    log.warn('Missing Twitch API credentials; assuming streamer is live');
-    return true;
+    log.warn('Missing Twitch API credentials; cannot verify streamer live state');
+    return null;
   }
 
   const url = `https://api.twitch.tv/helix/streams?user_login=${encodeURIComponent(streamer)}`;
@@ -222,8 +232,8 @@ async function isStreamerLive(streamer) {
     },
   });
   if (!res.ok) {
-    log.warn(`Twitch live check failed for ${streamer}: HTTP ${res.status}; assuming live`);
-    return true;
+    log.warn(`Twitch live check failed for ${streamer}: HTTP ${res.status}; will retry later`);
+    return null;
   }
   const data = await res.json();
   const stream = data.data?.[0];
@@ -249,27 +259,35 @@ async function watchStreamer(streamer, minutes) {
 async function runTwitchSessions() {
   if (!streamers.length) {
     log.warn('No Twitch streamers configured');
-    return false;
+    return { watched: 0, offline: 0, errors: 0, waitCycles: 0 };
   }
 
   let watched = 0;
   let offline = 0;
   let errors = 0;
+  let waitCycles = 0;
 
-  while (todayTotal() < cfg.awa_daily_target_minutes) {
+  while (todayTwitchTotal() < cfg.awa_daily_target_minutes) {
     let liveFound = false;
+    let liveCheckUnknown = false;
 
     for (const streamer of streamers) {
-      if (todayTotal() >= cfg.awa_daily_target_minutes) break;
+      if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) break;
       try {
-        if (!await isStreamerLive(streamer)) {
+        const live = await isStreamerLive(streamer);
+        if (live === null) {
+          liveCheckUnknown = true;
+          await page.waitForTimeout(jitterMs(5, 10));
+          continue;
+        }
+        if (!live) {
           offline++;
-          await page.waitForTimeout(jitterMs(10, 20));
+          await page.waitForTimeout(jitterMs(5, 10));
           continue;
         }
 
         liveFound = true;
-        const remaining = cfg.awa_daily_target_minutes - todayTotal();
+        const remaining = cfg.awa_daily_target_minutes - todayTwitchTotal();
         const minutes = Math.max(1, Math.min(cfg.awa_watch_chunk_minutes, Math.ceil(remaining)));
         await watchStreamer(streamer, minutes);
         watched++;
@@ -283,36 +301,55 @@ async function runTwitchSessions() {
       await page.waitForTimeout(jitterMs(10, 20));
     }
 
-    if (todayTotal() >= cfg.awa_daily_target_minutes) break;
+    if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) break;
     if (!liveFound) {
-      log.warn('No configured streamers are live; stopping this run');
-      break;
+      waitCycles++;
+      const reason = liveCheckUnknown
+        ? 'Live status unavailable'
+        : 'No configured streamers are live';
+      const waitMinutes = Math.max(1, cfg.awa_twitch_recheck_minutes);
+      log.info(`${reason}; waiting ${waitMinutes} minute${waitMinutes === 1 ? '' : 's'} before checking again`);
+      await page.waitForTimeout(waitMinutes * 60 * 1000);
     }
   }
 
-  return { watched, offline, errors };
+  return { watched, offline, errors, waitCycles };
 }
 
 try {
+  const wantsPresence = RUN_MODE === 'full' || RUN_MODE === 'presence';
+  const wantsTwitch = RUN_MODE === 'full' || RUN_MODE === 'twitch';
+
   if (!await ensureAwaLogin()) {
     process.exitCode = 1;
   } else if (arpTargetReached()) {
     log.info(`ARP target reached: ${arpBalance}/${cfg.awa_arp_target}`);
     log.summary({ siteId: SITE_ID, claimed: 0, skipped: 0, display: 'pointsEarned', pointsEarned: 0 });
-  } else if (todayTotal() >= cfg.awa_daily_target_minutes) {
-    log.info(`Daily target already met: ${todayTotal()}/${cfg.awa_daily_target_minutes} minutes`);
+  } else if (wantsTwitch && !wantsPresence && todayTwitchTotal() >= cfg.awa_daily_target_minutes) {
+    log.info(`Twitch target already met: ${todayTwitchTotal()}/${cfg.awa_daily_target_minutes} minutes`);
   } else {
-    const awaOk = await runAwaPresence();
-    if (!awaOk) throw new Error('AWA presence failed');
+    let twitch = { watched: 0, offline: 0, errors: 0, waitCycles: 0 };
 
-    const twitch = await runTwitchSessions();
+    if (wantsPresence) {
+      const awaOk = await runAwaPresence();
+      if (!awaOk) throw new Error('AWA presence failed');
+    }
+
+    if (wantsTwitch) {
+      if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) {
+        log.info(`Twitch target already met: ${todayTwitchTotal()}/${cfg.awa_daily_target_minutes} minutes`);
+      } else {
+        twitch = await runTwitchSessions();
+      }
+    }
+
     await readAwaLogin().catch(() => {});
     log.summary({
       siteId: SITE_ID,
       claimed: twitch.watched,
-      skipped: twitch.offline,
+      skipped: twitch.offline + twitch.waitCycles,
       display: 'tracked',
-      tracked: Number.isFinite(arpBalance) ? arpBalance : Math.round(todayTotal()),
+      tracked: Number.isFinite(arpBalance) ? arpBalance : Math.round(todayTwitchTotal()),
       failed: twitch.errors,
     });
   }
@@ -325,7 +362,7 @@ try {
   await db.write();
   if (notifyItems.length || process.exitCode) {
     const arp = Number.isFinite(arpBalance) ? ` · ${arpBalance}${cfg.awa_arp_target > 0 ? '/' + cfg.awa_arp_target : ''} ARP` : '';
-    const status = `${Math.round(todayTotal())}/${cfg.awa_daily_target_minutes} minutes today${arp}`;
+    const status = `${Math.round(todayTwitchTotal())}/${cfg.awa_daily_target_minutes} Twitch minutes today${arp}`;
     const body = notifyItems.length ? html_game_list(notifyItems) : status;
     await notify(`alienware-arena (${user}):<br>${status}<br>${body}`, { kind: process.exitCode ? 'action' : 'summary' });
   }

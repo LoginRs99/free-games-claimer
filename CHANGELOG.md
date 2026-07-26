@@ -4,6 +4,16 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.8.82
+
+**Hotfix for 2.8.81 crash-loop.** Per @Zerofire03's [#123](https://github.com/feldorn/free-games-claimer/issues/123) (also confirmed by @Steggl and @dennis18816): the container exited immediately on startup with `SyntaxError: Unexpected identifier 'fullscreen'` at `interactive-login.js:7672`. Root cause: the 2.8.81 change added a code comment inside `showVnc()` that contained literal backticks around the words `fullscreen` and `clipboard-read; clipboard-write`. Because `showVnc()` lives inside the giant `PANEL_HTML` template literal (client-side JS embedded in the HTML string), those backticks silently terminated the outer template and broke the parse.
+
+**Fix:** removed the comment; the one-line `iframe.allow` assignment is self-documenting. Same trap as v2.8.60 (@HelpMePleasepls's [#109](https://github.com/feldorn/free-games-claimer/issues/109)) — mental note added to the internal guidelines.
+
+Pull `ghcr.io/feldorn/free-games-claimer:latest` (or `:2.8.82`) once GHCR finishes the build; the panel + claim runs will start cleanly again.
+
+---
+
 ## What's new in 2.8.81
 
 **Panel noVNC iframe: fullscreen + clipboard sync now work.** Merges @50P15's [#122](https://github.com/feldorn/free-games-claimer/pull/122) (add `allow="fullscreen"` to the dynamically-created `<iframe>` in `showVnc()`) and broadens the `allow` list to also include `clipboard-read; clipboard-write` — noVNC's copy/paste bridge fails with the same "Disallowed by permissions policy" error for the same reason, so the fix generalizes cleanly.

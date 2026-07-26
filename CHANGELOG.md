@@ -4,6 +4,20 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.8.81
+
+**Panel noVNC iframe: fullscreen + clipboard sync now work.** Merges @50P15's [#122](https://github.com/feldorn/free-games-claimer/pull/122) (add `allow="fullscreen"` to the dynamically-created `<iframe>` in `showVnc()`) and broadens the `allow` list to also include `clipboard-read; clipboard-write` — noVNC's copy/paste bridge fails with the same "Disallowed by permissions policy" error for the same reason, so the fix generalizes cleanly.
+
+Before: clicking the fullscreen button inside the "Show browser" panel view hit `TypeError: Disallowed by permissions policy` (Chrome/Brave) or `Fullscreen request denied` (Firefox). noVNC's clipboard sync silently failed on the same permissions-policy check.
+
+After: `iframe.allow = 'fullscreen; clipboard-read; clipboard-write'` on the iframe element. Both features work as expected. No config changes needed on existing deploys — the panel just starts respecting the noVNC UI's fullscreen/clipboard buttons.
+
+Only affects the dynamically-created iframe in `showVnc()`. No other iframes in the codebase need the attribute (verified via grep).
+
+Credit: @50P15 for the diagnosis + original 1-line fix.
+
+---
+
 ## What's new in 2.8.80
 
 **Run Prime Gaming before GOG so cross-store keys redeem same-day.** Per @amphoterism's [#121](https://github.com/feldorn/free-games-claimer/issues/121): the pre-existing claim-order put GOG first (`claimOrder: 1`), Prime Gaming second. Prime routinely produces free-game keys that need to be redeemed on GOG's site (`redeem.gog.com`) — but since GOG's script had already finished for the day, Prime→GOG codes got queued for the NEXT scheduled GOG run. On weekly schedules this could stall a claim by up to 7 days.

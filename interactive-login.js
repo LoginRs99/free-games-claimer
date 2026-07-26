@@ -7666,7 +7666,12 @@ function showVnc() {
   if (!container.querySelector('iframe')) {
     const iframe = document.createElement('iframe');
     iframe.src = buildNovncUrl();
-    iframe.allow = 'fullscreen';
+    // Permissions Policy is enforced at the iframe element level; without
+    // an explicit allow list, noVNC's built-in fullscreen button + clipboard
+    // sync both silently fail with "Disallowed by permissions policy". 50P15's
+    // #122 added `fullscreen`; broadened to `clipboard-read; clipboard-write`
+    // for noVNC's copy/paste bridge (same failure mode, same one-line fix).
+    iframe.allow = 'fullscreen; clipboard-read; clipboard-write';
     container.appendChild(iframe);
   }
 }

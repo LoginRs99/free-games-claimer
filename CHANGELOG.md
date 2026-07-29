@@ -4,6 +4,58 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.9.0
+
+**Two independent changes merged together from @mateusfn98's [#125](https://github.com/feldorn/free-games-claimer/pull/125) — one design change, one bug fix. Both opt-in for existing behavior; `en-US`-locale users see zero difference.**
+
+### 1) Per-service locale, timezone & browser args for fingerprint coherence
+
+Previously every browser context launched with hard-coded `locale: 'en-US'` and no `timezoneId`. On a non-US IP that mismatch reads as a proxy/bot signal — the PR author reported their Steam sessions were being flagged. Aligning the context locale with the environment fixed the detection.
+
+**New behavior with `LANG` set** (e.g. `LANG=de_DE.UTF-8`):
+- Browser context `locale` = derived BCP-47 tag (`de-DE`)
+- `--lang` / `--accept-lang` flags match, with an English fallback appended (`de-DE,de;q=0.9,en;q=0.8`)
+- Diagnostic error context also captures the locale for support triage
+
+**New behavior with `TZ` set** (e.g. `TZ=Europe/Warsaw`):
+- Browser context `timezoneId` = TZ value
+- Aligns `Intl.DateTimeFormat().resolvedOptions().timeZone` with your IP's geolocation
+
+**`siteLocale()` per-site policy** (new helper in `src/util.js`):
+- **Follows LANG:** Steam, GOG, Epic Games, Fanatical, Humble Bundle, Lenovo Gaming
+  - All either force English via URL param (`?l=english` for Steam, `/en` for GOG, `/en-US` for Epic, `/en/` for Fanatical) or scrape locale-invariant APIs (Humble's `/store/api/search` JSON, Lenovo's URL-path selectors)
+- **Stays pinned to `en-US`:** Prime Gaming, Microsoft Rewards (desktop + mobile), FAB, AliExpress
+  - Locators on these sites key off English DOM text with no reliable URL-level English forcing; forcing English at the context level is required for them to keep working
+
+**Per-service base-URL overrides** (all optional, `<SVC>_PAGE_URL` env vars):
+- `EG_PAGE_URL`, `GOG_PAGE_URL`, `STEAM_PAGE_URL`, `FAB_PAGE_URL`, `HUMBLE_PAGE_URL`, `FANATICAL_PAGE_URL`, `LENOVO_PAGE_URL`, `UBISOFT_PAGE_URL`, `AE_PAGE_URL`
+- Escape hatch for locale/regional redirects or for pinning to a different URL entry point
+- All now surface in the panel's **Environment tab** under a new "Per-service URL overrides" category
+
+**Additional fixes bundled in this change:**
+- `interactive-login.js` GOG redeem URL now uses `/en/redeem/...` so the success heading stays English regardless of context locale
+- `interactive-login.js` Steam redeem URL now includes `?l=english` for the same reason
+- `localeArgs('en-US')` output matches the previous flag set byte-for-byte, so users who don't set `LANG` see zero behavior change
+
+### 2) Steam login form selector bug fixes
+
+Bundled with the locale change but independent — fixes a latent bug where the Steam login form's username input could be matched by the store header's search box when React class selectors went stale, silently sending emails into store search and looping login forever.
+
+- **Username input** now scoped to `form:has(input[type="password"]) input[type="text"]:not([name="term"])` — excludes the search box
+- **Sign-in button** now matched by text (`button:has-text("Sign in")`) instead of `button[type="submit"]` — the store header renders submit-typed buttons before the login form
+- **2FA input + button** similarly scoped
+- **New**: bad-credential detection surfaces `Steam rejected the login — check STEAM_EMAIL (use your Steam account name, not your email address) and STEAM_PASSWORD` + Pushover/Apprise notify + exit 1, instead of silently re-looping. Steam signs in with the account NAME, not the email — a common source of the previous loop.
+
+### Follow-up cleanup in this release
+
+- Removed unused `@types/node` devDep introduced in the PR (editor-only, nothing in the tree references it)
+- Added a comment marker on the backgrounded credential-error handler so future readers don't remove the missing `await` thinking it's a bug
+- Surfaced the new `<SVC>_PAGE_URL` env vars in the panel's Environment tab
+
+**Full credit to @mateusfn98** for the design, implementation, and self-testing. Reviewed and merged into `main`.
+
+---
+
 ## What's new in 2.8.83
 
 **Docker images now publish semver-versioned tags.** Per @svartis's [#124](https://github.com/feldorn/free-games-claimer/issues/124): the workflow previously only tagged `:latest`, branch name, sha, and `YYYYMMDD` date. Kubernetes-style deploy tools (Flux CD, Watchtower, Renovate) need an explicit version tag to detect and roll to a specific release.

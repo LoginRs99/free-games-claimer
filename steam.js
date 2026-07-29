@@ -364,8 +364,11 @@ try {
       // nav items as button[type=submit] before the form, so a bare
       // button[type=submit].first() clicked those instead of signing in.
       await page.locator('button:has-text("Sign in")').first().click();
-      // Surface bad credentials instead of silently re-looping. Note Steam signs
-      // in with the account NAME, not the email — a common cause of this error.
+      // Backgrounded (no await) — surfaces late if credentials are rejected while
+      // the main flow continues waiting for 2FA / login-URL. The waitFor race
+      // between this branch and the Steam Guard branch below decides which fires;
+      // the loser's promise rejects on close and the .catch(() => {}) swallows it.
+      // Note Steam signs in with the account NAME, not the email — a common cause.
       page.getByText(/check your password and account name/i).first().waitFor({ timeout: cfg.login_timeout }).then(async () => {
         log.error('Steam rejected the login — check STEAM_EMAIL (use your Steam account name, not your email address) and STEAM_PASSWORD');
         await notify('steam: login failed — wrong account name or password.');

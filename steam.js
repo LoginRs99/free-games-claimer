@@ -1,6 +1,6 @@
 import { chromium } from 'patchright';
 import { writeFileSync } from 'node:fs';
-import { resolve, jsonDb, datetime, filenamify, prompt, notify, html_game_list, handleSIGINT, log, dataDir, cleanProfileLocks, matchKey, stripGpTail, getDiscoveryUserMarkedKeys, localeArgs } from './src/util.js';
+import { resolve, jsonDb, datetime, filenamify, prompt, notify, html_game_list, handleSIGINT, log, dataDir, cleanProfileLocks, matchKey, stripGpTail, getDiscoveryUserMarkedKeys, localeArgs, siteLocale } from './src/util.js';
 import { cfg } from './src/config.js';
 import { siteVersion } from './src/sites.js';
 import { fetchGamerPowerGiveaways, filterFor as filterGpFor, resolveGamerPowerHref } from './src/gamerpower.js';
@@ -8,7 +8,7 @@ import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfClean } from
 
 const screenshot = (...a) => resolve(cfg.dir.screenshots, 'steam', ...a);
 
-const URL_STORE = 'https://store.steampowered.com';
+const URL_STORE = cfg.steam_page_url || 'https://store.steampowered.com'; // STEAM_PAGE_URL override
 const URL_LOGIN = `${URL_STORE}/login/`;
 
 // All our store-page selectors and success indicators key off English text
@@ -76,13 +76,14 @@ cleanProfileLocks(cfg.dir.browser);
 const context = await chromium.launchPersistentContext(cfg.dir.browser, {
   headless: cfg.headless,
   viewport: { width: cfg.width, height: cfg.height },
-  locale: 'en-US',
+  locale: siteLocale('steam'), // see siteLocale() for the per-site locale policy
+  timezoneId: cfg.timezone_id,
   recordVideo: cfg.record ? { dir: 'data/record/', size: { width: cfg.width, height: cfg.height } } : undefined,
   recordHar: cfg.record ? { path: `data/record/steam-${filenamify(datetime())}.har` } : undefined,
   handleSIGINT: false,
   args: [
     '--hide-crash-restore-bubble',
-    ...localeArgs(),
+    ...localeArgs(siteLocale('steam')),
   ],
 });
 
@@ -329,7 +330,7 @@ try {
     { name: 'Steam_Language', value: 'english', domain: 'store.steampowered.com', path: '/' },
   ]);
 
-  await page.goto(URL_STORE, { waitUntil: 'domcontentloaded' });
+  await page.goto(withEnglish(URL_STORE), { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(3000);
 
   const isLoggedIn = async () => {
@@ -340,7 +341,7 @@ try {
   while (!await isLoggedIn()) {
     log.warn('Not signed in to Steam');
     if (cfg.nowait) process.exit(1);
-    await page.goto(URL_LOGIN, { waitUntil: 'domcontentloaded' });
+    await page.goto(withEnglish(URL_LOGIN), { waitUntil: 'domcontentloaded' });
     if (!cfg.debug) context.setDefaultTimeout(cfg.login_timeout);
     log.status('Login timeout', `${cfg.login_timeout / 1000}s`);
     if (cfg.steam_email && cfg.steam_password) log.info('Using credentials from environment');
@@ -348,12 +349,28 @@ try {
     const email = cfg.steam_email || await prompt({ message: 'Enter Steam email/username' });
     const password = email && (cfg.steam_password || await prompt({ type: 'password', message: 'Enter Steam password' }));
     if (email && password) {
-      await page.waitForTimeout(2000);
-      const usernameInput = page.locator('input[type="text"]._2GBWeup5cttgbTw8FM3tfx, input[type="text"][class*="newlogindialog"], input[type="text"]').first();
+      // Wait for the real login form to render — its password field is unique to
+      // the login dialog, whereas the store header only carries the search box.
+      // Then target the username input excluding that search box
+      // (#store_nav_search_term): the old bare `input[type="text"]` fallback
+      // matched it first when the React class selectors were stale, so the email
+      // was typed into store search and the login looped without ever signing in.
+      await page.waitForSelector('input[type="password"]', { timeout: cfg.login_timeout });
+      const usernameInput = page.locator('input[type="text"]._2GBWeup5cttgbTw8FM3tfx, form:has(input[type="password"]) input[type="text"]:not([name="term"])').first();
       const passwordInput = page.locator('input[type="password"]').first();
       await usernameInput.fill(email);
       await passwordInput.fill(password);
-      await page.locator('button[type="submit"], button:has-text("Sign in")').first().click();
+      // Match the login form's "Sign in" by text — the store header renders its
+      // nav items as button[type=submit] before the form, so a bare
+      // button[type=submit].first() clicked those instead of signing in.
+      await page.locator('button:has-text("Sign in")').first().click();
+      // Surface bad credentials instead of silently re-looping. Note Steam signs
+      // in with the account NAME, not the email — a common cause of this error.
+      page.getByText(/check your password and account name/i).first().waitFor({ timeout: cfg.login_timeout }).then(async () => {
+        log.error('Steam rejected the login — check STEAM_EMAIL (use your Steam account name, not your email address) and STEAM_PASSWORD');
+        await notify('steam: login failed — wrong account name or password.');
+        process.exit(1);
+      }).catch(() => {});
       page.waitForSelector('[class*="newlogindialog_AwaitingMobileConfLabel"], [class*="segmentedinputs"]').then(async () => {
         log.info('Steam Guard — enter the code from your authenticator app or email');
         const code = await prompt({ type: 'text', message: 'Enter Steam Guard code', validate: n => n.toString().length == 5 || 'The code must be 5 characters!' });
@@ -364,15 +381,15 @@ try {
               await inputs[i].fill(code[i]);
             }
           } else {
-            await page.locator('input[type="text"]').first().fill(code);
-            await page.locator('button[type="submit"], button:has-text("Submit")').first().click();
+            await page.locator('#twofactorcode_entry, input[type="text"]:not([name="term"])').first().fill(code);
+            await page.locator('button:has-text("Submit"), #login_twofactorauth_buttonset_entercode button').first().click();
           }
         }
       }).catch(_ => {});
       try {
         await page.waitForURL('https://store.steampowered.com/', { timeout: cfg.login_timeout });
       } catch {
-        await page.goto(URL_STORE, { waitUntil: 'domcontentloaded' });
+        await page.goto(withEnglish(URL_STORE), { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(3000);
       }
     } else {
@@ -386,7 +403,7 @@ try {
       await page.waitForSelector('#account_pulldown', { timeout: cfg.login_timeout });
     }
     if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
-    await page.goto(URL_STORE, { waitUntil: 'domcontentloaded' });
+    await page.goto(withEnglish(URL_STORE), { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(2000);
   }
 

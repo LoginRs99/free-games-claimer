@@ -4,6 +4,24 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.8.83
+
+**Docker images now publish semver-versioned tags.** Per @svartis's [#124](https://github.com/feldorn/free-games-claimer/issues/124): the workflow previously only tagged `:latest`, branch name, sha, and `YYYYMMDD` date. Kubernetes-style deploy tools (Flux CD, Watchtower, Renovate) need an explicit version tag to detect and roll to a specific release.
+
+Added three semver-derived tags on git-tag push (`vX.Y.Z`):
+
+- `ghcr.io/feldorn/free-games-claimer:2.8.83` — pin to exact release
+- `ghcr.io/feldorn/free-games-claimer:2.8` — auto-follow patch releases within a minor
+- `ghcr.io/feldorn/free-games-claimer:2` — auto-follow minor releases within a major
+
+`:latest`, branch, sha, and `YYYYMMDD` tags continue to publish on branch pushes exactly as before — this is additive, no existing pin targets change.
+
+To use with Flux CD, point your `ImageRepository` at `ghcr.io/feldorn/free-games-claimer` and set an `ImagePolicy` with `semver.range: '>=2.8.0 <3.0.0'` (or whatever range fits your update cadence).
+
+Only affects the CI workflow — no runtime behavior change. Existing `:latest` deployments unaffected.
+
+---
+
 ## What's new in 2.8.82
 
 **Hotfix for 2.8.81 crash-loop.** Per @Zerofire03's [#123](https://github.com/feldorn/free-games-claimer/issues/123) (also confirmed by @Steggl and @dennis18816): the container exited immediately on startup with `SyntaxError: Unexpected identifier 'fullscreen'` at `interactive-login.js:7672`. Root cause: the 2.8.81 change added a code comment inside `showVnc()` that contained literal backticks around the words `fullscreen` and `clipboard-read; clipboard-write`. Because `showVnc()` lives inside the giant `PANEL_HTML` template literal (client-side JS embedded in the HTML string), those backticks silently terminated the outer template and broke the parse.

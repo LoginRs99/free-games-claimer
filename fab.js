@@ -290,23 +290,51 @@ try {
       if (viaCheckout) {
         // "Buy now" opens FAB's checkout for the €0 order. Walk it
         // defensively: accept any license/EULA checkbox, then click the
-        // final place-order CTA. These checkout selectors are best-effort
-        // (couldn't be verified live — the test account already owned every
-        // current free asset); the per-asset try/catch + failure screenshots
-        // under data/screenshots/fab/failed/ make refining them on the next
-        // unowned drop straightforward.
-        await page.waitForTimeout(2500);
-        const terms = page.locator('[role="dialog"] input[type="checkbox"], input[type="checkbox"][name*="eula" i], input[type="checkbox"][name*="terms" i], input[type="checkbox"][name*="agree" i]').first();
+        // final place-order CTA. v2.9.1 broadened the selector coverage
+        // and dropped the [role=dialog] scope after ypurpl's #127 showed
+        // all Buy-now attempts uniformly failing on live free assets —
+        // FAB may render checkout as a full-page nav rather than a modal.
+        await page.waitForTimeout(4000);
+        const terms = page.locator('[role="dialog"] input[type="checkbox"], input[type="checkbox"][name*="eula" i], input[type="checkbox"][name*="terms" i], input[type="checkbox"][name*="agree" i], form input[type="checkbox"]:not(:checked)').first();
         const termsPresent = await terms.count().catch(() => 0);
         const termsChecked = termsPresent ? await terms.isChecked().catch(() => true) : true;
         if (termsPresent && !termsChecked) {
           await terms.check({ timeout: 4000 }).catch(() => {});
         }
-        const placeOrder = page.locator('button:has-text("Place Order"), button:has-text("Place order"), button:has-text("Complete Order"), button:has-text("Complete order"), button:has-text("Get it now"), button:has-text("Get It Now"), button:has-text("Confirm"), [role="dialog"] button:has-text("Buy now")').first();
-        await placeOrder.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
-        if (await placeOrder.count().catch(() => 0)) {
-          if (cfg.debug) console.log('  clicking place-order CTA');
-          await placeOrder.click({ delay: 11 }).catch(() => {});
+        // Try each candidate label in order; first visible one wins. Logging the
+        // match on debug tells us exactly which label FAB is using in production,
+        // so the next iteration can prune the list to the real one.
+        const candidates = [
+          { name: 'Place Order (role)',  loc: page.getByRole('button', { name: /place\s*order/i }).first() },
+          { name: 'Complete Order (role)', loc: page.getByRole('button', { name: /complete\s*(order|purchase|checkout)/i }).first() },
+          { name: 'Confirm Order (role)', loc: page.getByRole('button', { name: /confirm\s*(order|purchase)?/i }).first() },
+          { name: 'Get It Now (role)',   loc: page.getByRole('button', { name: /get\s*it\s*now/i }).first() },
+          { name: 'Checkout (role)',      loc: page.getByRole('button', { name: /^checkout$|proceed\s*to\s*checkout/i }).first() },
+          { name: 'Place Order (text)',  loc: page.locator('button:has-text("Place Order"), button:has-text("Place order")').first() },
+          { name: 'Complete Order (text)', loc: page.locator('button:has-text("Complete Order"), button:has-text("Complete order"), button:has-text("Complete Purchase")').first() },
+          { name: 'Confirm (text)',       loc: page.locator('button:has-text("Confirm")').first() },
+          { name: 'Get It Now (text)',   loc: page.locator('button:has-text("Get it now"), button:has-text("Get It Now"), button:has-text("Get for free")').first() },
+          { name: 'Dialog Buy Now',       loc: page.locator('[role="dialog"] button:has-text("Buy now"), [role="dialog"] button:has-text("Buy Now")').first() },
+        ];
+        // Wait up to 15s for ANY candidate to be visible, then click it.
+        const raceStart = Date.now();
+        let picked = null;
+        while (Date.now() - raceStart < 15000) {
+          for (const c of candidates) {
+            const n = await c.loc.count().catch(() => 0);
+            if (n > 0 && await c.loc.isVisible().catch(() => false)) {
+              picked = c;
+              break;
+            }
+          }
+          if (picked) break;
+          await page.waitForTimeout(400);
+        }
+        if (picked) {
+          if (cfg.debug) console.log(`  place-order CTA matched: ${picked.name}`);
+          await picked.loc.click({ delay: 11 }).catch(() => {});
+        } else if (cfg.debug) {
+          console.log('  no place-order CTA matched any known label — capturing full URL:', page.url());
         }
       }
 
@@ -318,6 +346,13 @@ try {
         await page.locator('text=/saved in my library|added to (my )?library|in your library|view in launcher|view in my library/i').first().waitFor({ state: 'visible', timeout: cfg.timeout });
         claimed = true;
       } catch {
+        // v2.9.1: capture the actual failed-checkout state BEFORE the fallback
+        // re-nav overwrites it — otherwise every failure screenshot shows the
+        // clean product page (see ypurpl's #127). This is our only window into
+        // what FAB's checkout flow actually rendered.
+        const pFail = screenshot('failed', `${filenamify(id)}_checkout_${filenamify(datetime())}.png`);
+        if (pFail) await page.screenshot({ path: pFail, fullPage: true }).catch(() => {});
+        if (cfg.debug) console.log(`  claim wait timed out — URL at failure: ${page.url()}`);
         await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {});
         await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
         claimed = await isOwned();

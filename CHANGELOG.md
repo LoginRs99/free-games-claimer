@@ -4,6 +4,24 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.9.1
+
+**FAB checkout diagnostic + selector broadening — ypurpl's [#127](https://github.com/feldorn/free-games-claimer/issues/127).**
+
+ypurpl reported FAB failing on all Buy-now assets while manual claims through the browser worked fine. The three failure screenshots they attached all showed the clean product listing page rather than the actual failed-checkout state — because the existing catch block re-navigated to the product URL before capturing the screenshot, overwriting whatever the checkout flow had rendered. This release fixes the diagnostic path and takes a first pass at broadening the checkout-CTA selectors that were shipped without live-verification (the original test account already owned every free asset).
+
+**Changes to `fab.js`:**
+
+1. **Pre-fallback failure screenshot.** When the "saved in my library" wait times out, capture the live state (fullPage) *before* the fallback `page.goto(url)` overwrites it. Written to `data/screenshots/fab/failed/<id>_checkout_<timestamp>.png`. Also logs `page.url()` at the failure point when `DEBUG=1`.
+2. **Broadened place-order selector coverage.** The prior selector list was scoped to `[role="dialog"]`, assuming a modal checkout. FAB may render checkout as a full-page navigation instead. The new candidate list races 10 alternatives (role-based + text-based) for up to 15s: `Place Order`, `Complete Order`/`Complete Purchase`, `Confirm`, `Get It Now`/`Get for free`, `Checkout`/`Proceed to Checkout`, plus the original dialog-scoped Buy Now fallback.
+3. **DEBUG log which selector matched.** On success, prints `place-order CTA matched: <label>` so the next iteration can prune to the actual label FAB uses in production; on no-match, prints the current URL to help figure out where the flow went.
+4. **Wider EULA/terms checkbox coverage.** Added an unchecked-form-checkbox fallback (`form input[type="checkbox"]:not(:checked)`) alongside the existing modal/name-matching patterns.
+5. **Initial post-BuyNow wait: 2.5s → 4s.** FAB's checkout page renders through client-side routing; the extra window reduces spurious "no candidate matched" outcomes on slower connections.
+
+If you're seeing FAB Buy-now failures, please update to `:2.9.1` and share the new `data/screenshots/fab/failed/<id>_checkout_*.png` — that screenshot will now show what the checkout page actually looked like at the moment of failure, and `DEBUG=1` output will name the button label FAB is currently using.
+
+---
+
 ## What's new in 2.9.0
 
 **Two independent changes merged together from @mateusfn98's [#125](https://github.com/feldorn/free-games-claimer/pull/125) — one design change, one bug fix. Both opt-in for existing behavior; `en-US`-locale users see zero difference.**

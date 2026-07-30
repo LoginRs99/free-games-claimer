@@ -4,6 +4,20 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.9.2
+
+**Restore `@types/node` devDep — my miscall in the v2.9.0 cleanup, caught by @mateusfn98 in [discussion #132](https://github.com/feldorn/free-games-claimer/discussions/132).**
+
+I removed `@types/node` in v2.9.0 after grepping for runtime imports and finding none — labelled it "unused" and dropped it. But `jsconfig.json` has `checkJs: true`, meaning every editor with the TypeScript language server (VS Code, Cursor, Zed, coc-tsserver) was silently leaning on `@types/node` for typings on `process.env`, `fs.readFileSync`, `path.resolve`, and the rest of Node's built-ins. Removing it broke type-check in-editor for every contributor — a silent editor-side regression with no CI signal, no test signal, no user-visible bug, but a real degradation of the code-quality signal the repo depends on.
+
+Restored at the same version range (`^26.1.1`) it was at before removal. No runtime effect.
+
+Lesson filed in local feedback memory: when triaging "unused" devDeps for removal, `grep`ing for runtime imports is necessary but not sufficient — must also check `jsconfig.json` / `tsconfig.json` for `checkJs`, `allowJs`, `types`, and `typeRoots`. `@types/*` packages are usually there for the editor, not the runtime.
+
+Thanks @mateusfn98.
+
+---
+
 ## What's new in 2.9.1
 
 **FAB checkout diagnostic + selector broadening — ypurpl's [#127](https://github.com/feldorn/free-games-claimer/issues/127).**

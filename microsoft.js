@@ -926,7 +926,7 @@ async function clickNewUiActivityCards(page) {
     { url: BING_REWARDS_URL + '/dashboard', label: 'dailyset',      ariaLabel: 'Daily set',       selector: '#dailyset a:not([href$="/earn"]):not(:has(.bg-statusSuccessRewardsBg))' },
     { url: BING_REWARDS_URL + '/earn',      label: 'exploreonbing', ariaLabel: 'Explore on Bing', selector: '#exploreonbing a:not(:has(.grayscale)):not(:has(.bg-statusSuccessRewardsBg))' },
   ];
-  let attempted = 0, clicked = 0, errors = 0;
+  let attempted = 0, clicked = 0, errors = 0, savedDiag = false;
   for (const { url, label, ariaLabel, selector } of pages) {
     if (page.isClosed()) break;
     try {
@@ -964,6 +964,37 @@ async function clickNewUiActivityCards(page) {
         } catch (e2) {
           errors++;
           log.warn(`Card #${i + 1} on ${label} click failed: ${e2.message.split('\n')[0]}`);
+          // Once per run, on the first failure, capture the page state +
+          // the failing card's outerHTML + boundingBox. Matches the
+          // old-UI diagnostic pattern below (~line 1023) so we get the
+          // same actionable signal when new-UI variants (e.g. #135) fail
+          // clicks with no obvious cause in the log.
+          if (!savedDiag) {
+            savedDiag = true;
+            const ts = new Date().toISOString().replace(/[:.]/g, '-');
+            const base = `ms-newui-${label}-fail-${ts}`;
+            const diagDir = dataDir('diagnostics/microsoft');
+            try {
+              mkdirSync(diagDir, { recursive: true });
+              await page.screenshot({ path: `${diagDir}/${base}.png`, fullPage: true }).catch(() => {});
+              writeFileSync(`${diagDir}/${base}.html`, await page.content());
+              const cardHtml = await cards[i].evaluate(el => el.outerHTML).catch(() => null);
+              const box = await cards[i].boundingBox().catch(() => null);
+              const meta = [
+                `url: ${page.url()}`,
+                `label: ${label}`,
+                `card #${i + 1} of ${cards.length}`,
+                `boundingBox: ${box ? JSON.stringify(box) : 'null'}`,
+                '',
+                `card outerHTML:`,
+                cardHtml || '(unavailable)',
+              ].join('\n');
+              writeFileSync(`${diagDir}/${base}.meta.txt`, meta);
+              log.warn(`Saved diagnostic: data/diagnostics/microsoft/${base}.{png,html,meta.txt}`);
+            } catch (diagErr) {
+              log.warn(`Failed to save new-UI diagnostic: ${diagErr.message.split('\n')[0]}`);
+            }
+          }
         }
       }
     }

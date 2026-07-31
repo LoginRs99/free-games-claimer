@@ -4,6 +4,18 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.9.4
+
+**MS Rewards: new-UI card-click failures now save a diagnostic bundle — @dabziuebu4egh2's [#135](https://github.com/feldorn/free-games-claimer/issues/135).**
+
+The old-UI activity-card function has always dumped a full-page screenshot + page HTML to `data/diagnostics/microsoft/ms-card-fail-*.{png,html}` on first failure. The new-UI equivalent (`clickNewUiActivityCards`) didn't — so when the redesigned dashboard's card clicks silently timed out, the only signal was the log line "Card #N click failed: elementHandle.click: Timeout 10000ms exceeded" with no way to see what was actually on screen.
+
+Now the new-UI path dumps the same bundle plus the failing card's `outerHTML` and `boundingBox`, in `data/diagnostics/microsoft/ms-newui-{dailyset,exploreonbing}-fail-*.{png,html,meta.txt}`. Fires once per run on the first failure — enough to diagnose the account-variant DOM without spamming.
+
+No behaviour change on successful runs.
+
+---
+
 ## What's new in 2.9.3
 
 **Internal refactor — extract shared `launchContext` factory ([PR #136](https://github.com/feldorn/free-games-claimer/pull/136) by @mateusfn98).**

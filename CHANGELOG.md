@@ -4,6 +4,18 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.9.3
+
+**Internal refactor — extract shared `launchContext` factory ([PR #136](https://github.com/feldorn/free-games-claimer/pull/136) by @mateusfn98).**
+
+Every scraper (`aliexpress`, `epic-games`, `fab`, `fanatical`, `gog`, `humble-bundle`, `lenovo-gaming`, `microsoft`, `prime-gaming`, `steam`) plus the panel's browser-launch paths used to repeat the same `chromium.launchPersistentContext(...)` preamble verbatim — same `cleanProfileLocks + headless/viewport/locale/timezone/args/SIGINT` wiring, differing only in per-site overrides. That copy-paste is now centralised in `src/browser.js` as `launchContext(siteId, opts)`; per-site differences (extra GPU args, custom profile dir, fingerprint/device overrides, recording) flow in through options. Net **-128 lines** across 12 files.
+
+Behaviour-preserving by design — no user-visible change. The `v2.9.0` locale/timezone rollout ended up touching every one of these launch sites individually; going forward, the same category of change is one line in one file. Also removes the "remembered to change 9 out of 10 places" bug class.
+
+Thanks @mateusfn98 for the follow-through — clean, self-contained, exactly the shape I asked for.
+
+---
+
 ## What's new in 2.9.2
 
 **Restore `@types/node` devDep — my miscall in the v2.9.0 cleanup, caught by @mateusfn98 in [discussion #132](https://github.com/feldorn/free-games-claimer/discussions/132).**

@@ -2,7 +2,7 @@ import { chromium } from 'patchright';
 import { authenticator } from 'otplib';
 import { existsSync } from 'fs';
 import { resolve, jsonDb, datetime, filenamify, prompt, confirm, notify, html_game_list, closeContextSafely, log } from './src/util.js';
-import { launchContext } from './src/browser.js';
+import { launchContext, gotoWithRetry } from './src/browser.js';
 import { cfg } from './src/config.js';
 import { siteVersion } from './src/sites.js';
 
@@ -24,6 +24,9 @@ const screenshot = (...a) => resolve(cfg.dir.screenshots, 'fab', ...a);
 const URL_HOME = 'https://www.fab.com/';
 const URL_FREE = cfg.fab_page_url || 'https://www.fab.com/limited-time-free'; // FAB_PAGE_URL override
 const URL_ME = 'https://www.fab.com/i/users/me';
+
+// Retry policy shared by this site's top-level navigations.
+const FAB_NAV = { attempts: 2, backoffMs: 5000, siteId: 'fab' };
 
 log.section(`FAB (v${siteVersion('fab')})`);
 
@@ -137,7 +140,7 @@ const loginEpic = async () => {
 };
 
 try {
-  await page.goto(URL_FREE, { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, URL_FREE, FAB_NAV);
   dismissCookieBanner();
 
   if (cfg.time) console.timeEnd('startup');
@@ -151,7 +154,7 @@ try {
     if (!cfg.debug) context.setDefaultTimeout(cfg.login_timeout);
     log.status('Login timeout', `${cfg.login_timeout / 1000}s`);
 
-    await page.goto(URL_HOME, { waitUntil: 'domcontentloaded' });
+    await gotoWithRetry(page, URL_HOME, FAB_NAV);
     dismissCookieBanner();
     // FAB's sign-in is an icon-only avatar button (aria-label="Sign in").
     const signIn = page.locator('[aria-label="Sign in" i], a[href*="/login" i], a:has-text("Sign In"), button:has-text("Sign In")').first();
@@ -172,7 +175,7 @@ try {
   // Discover free assets — scrape listing links off the Limited-Time Free
   // page (mirrors Epic's "Free Now" scrape). A FAB API path could replace
   // this later if a stable public endpoint is identified.
-  await page.goto(URL_FREE, { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, URL_FREE, FAB_NAV);
   dismissCookieBanner();
   const listingLoc = page.locator('a[href*="/listings/"]');
   await listingLoc.first().waitFor().catch(() => {

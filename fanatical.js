@@ -1,6 +1,6 @@
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { datetime, notify, log, dataDir, handleSIGINT } from './src/util.js';
-import { launchContext } from './src/browser.js';
+import { launchContext, gotoWithRetry } from './src/browser.js';
 import { cfg } from './src/config.js';
 import { siteVersion } from './src/sites.js';
 
@@ -36,6 +36,9 @@ process.on('exit', code => {
 });
 
 const URL_PAGE = cfg.fanatical_page_url || 'https://www.fanatical.com/en/free-games-keys'; // FANATICAL_PAGE_URL override
+
+// Retry policy shared by this site's top-level navigations.
+const FANATICAL_NAV = { attempts: 2, backoffMs: 5000, gotoOpts: { waitUntil: 'domcontentloaded', timeout: 30000 }, siteId: 'fanatical' };
 const STATE_FILE = dataDir('fanatical-watch.json');
 
 function loadState() {
@@ -107,7 +110,7 @@ try {
     } catch { /* swallow per-response parse errors */ }
   });
 
-  await page.goto(URL_PAGE, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await gotoWithRetry(page, URL_PAGE, FANATICAL_NAV);
   await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
   await page.waitForTimeout(2000);
 } catch (e) {

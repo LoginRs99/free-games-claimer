@@ -4,6 +4,25 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.10.0
+
+**Shared `gotoWithRetry` across all sites ([PR #138](https://github.com/feldorn/free-games-claimer/pull/138) by @mateusfn98) — organically covers @zhaoxp-xyz's [#137](https://github.com/feldorn/free-games-claimer/issues/137).**
+
+The Epic-only `gotoWithNavRetry` helper (shipped for #104 / #105 back in v2.8.57-58 and extended for #107's `Target crashed`) is now generalised into `src/browser.js` as `gotoWithRetry(page, url, policy)`. Every site's top-level navigations use it, each with its own policy object (`attempts`, `backoffMs`, `isRecoverable`, `gotoOpts`, `siteId`).
+
+- **Epic** — behaviour preserved exactly: 30s backoff × 2 attempts, `isRecoverableEpicPageError` predicate (still includes `Target crashed` + the ERR_* family).
+- **Microsoft** — 5s × 2 with the existing `isRecoverableMsNavError` predicate, wraps both `BING_REWARDS_URL` gotos in the login flow.
+- **FAB, GOG, Steam, Humble, Fanatical, Lenovo** — new defensive 5s × 2, retry-any policy where these sites previously had no retry at all.
+- **Prime** — 4×30s with no backoff, tuned for Amazon Luna's intermittent tarpitting behaviour (per-attempt timeout 30s instead of the default 60s so a stalled document fails fast and re-navigates).
+
+The Steam addition is what @zhaoxp-xyz's [#137](https://github.com/feldorn/free-games-claimer/issues/137) needed: a single `page.goto: net::ERR_EMPTY_RESPONSE at https://store.steampowered.com/` at run-start no longer takes down the whole Steam pass — the retry gives Steam a second chance and the run continues if the second one lands.
+
+Site versions bumped: epic-games 2.1→2.2, fab 0.1→0.2, fanatical 0.1→0.2, gog 2.2→2.3, humble-bundle 0.1→0.2, lenovo-gaming 0.1→0.2, microsoft 2.1→2.2, prime-gaming 2.0→2.1, steam 2.0→2.1.
+
+Net +55 lines across 11 files (a lot of that is the helper's docs + per-site policy objects; the actual copy-paste it replaces was more compact than #136's launchContext preamble was). Second consecutive PR from @mateusfn98 — thanks for the follow-through.
+
+---
+
 ## What's new in 2.9.4
 
 **MS Rewards: new-UI card-click failures now save a diagnostic bundle — @dabziuebu4egh2's [#135](https://github.com/feldorn/free-games-claimer/issues/135).**

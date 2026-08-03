@@ -4,7 +4,7 @@ import { watch, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 const __panelDirname = path.dirname(fileURLToPath(import.meta.url));
-import { datetime, notify, jsonDb, normalizeTitle, cleanProfileLocks, readDigestBuffer, markDigestFlushed } from './src/util.js';
+import { datetime, notify, jsonDb, normalizeTitle, cleanProfileLocks, readDigestBuffer, markDigestFlushed, stripGpTail } from './src/util.js';
 import { launchContext } from './src/browser.js';
 import { cfg } from './src/config.js';
 import { describeConfig, patchConfig, describeEnv, getSchedulerConfig, CONFIG_FILE_PATH } from './src/app-config.js';
@@ -8868,10 +8868,11 @@ const server = http.createServer(async (req, res) => {
         };
       };
 
-      // For GamerPower titles like "Devil's Island (Epic Games) Giveaway",
-      // strip the trailing platform tag + "Giveaway" so title-match against
-      // store DBs works. FGF cleaned titles already drop the bracket prefix.
-      const stripGpTail = t => String(t || '').replace(/\s*\([^)]+\)\s*Giveaway\b.*$/i, '').trim();
+      // stripGpTail is imported from src/util.js — the shared helper handles
+      // multi-word variants "(Steam) Key Giveaway", "(Epic Games) Beta Giveaway",
+      // and the pluralised "Giveaways" that this local copy used to miss,
+      // causing panel-written dedup keys to diverge from what the claim scripts
+      // read (silent notify-loop on ignored Steam Key Giveaway entries).
 
       // Cross-source price index. GamerPower entries carry a `worth`
       // field but FGF posts don't — Reddit doesn't aggregate price

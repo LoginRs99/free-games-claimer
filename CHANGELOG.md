@@ -4,6 +4,22 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.10.1
+
+**Fix: panel's local `stripGpTail` override was masking the shared multi-word fix — silent daily-notify loop on "Ignored" `(Steam) Key Giveaway` entries.**
+
+`src/util.js`'s `stripGpTail` was hardened for multi-word GamerPower title tails back in v2.8.75 (see [memory note](https://github.com/feldorn/free-games-claimer/blob/main/CHANGELOG.md#whats-new-in-2875)) — the regex became `\s*\([^)]+\)\s*(?:\w+\s+)*Giveaways?\b.*$` to cover `(Steam) Key Giveaway`, `(Epic Games) Beta Giveaway`, plural `Giveaways`, etc.
+
+But `interactive-login.js:8874` had shadowed that helper with a local single-word copy (`Giveaway\b`) that never got updated. Consequence: when a user hit **Ignore** in the Discoveries tab on a title like `Dwarven Realms (Steam) Key Giveaway`, the panel wrote the dedup key `steam::dwarven realms steam key giveaway` — cruft included. Every subsequent Steam run's `getDiscoveryUserMarkedKeys()` lookup used the shared (fixed) `stripGpTail`, produced `steam::dwarven realms`, missed the stored key, and re-fired the "action needed" notify.
+
+If your `steam_min_price` gate also happened to not exclude the item (because it wasn't set, or the item was above your threshold), the same notify shipped every single day forever. Caught locally on `Dwarven Realms (Steam) Key Giveaway` — one daily push for a full week.
+
+Fix: dropped the local override and imported the shared `stripGpTail` from `src/util.js`. Any pre-2.10.1 stale keys in `data/discoveries-state.json` need one-time cleanup — either re-click Ignore in the panel (which now writes the correct key), or `jq` the JSON to drop keys where the value ends in ` giveaway`/` giveaways`.
+
+Filed as another instance of the ["Sweep both code paths on locator fixes"](https://github.com/feldorn/free-games-claimer/blob/main/CHANGELOG.md) pattern — the panel and the runtime read/write the same on-disk data, so a helper that lives in both places must stay in sync. The right shape is to always import from `src/util.js`; a local shadow is a landmine.
+
+---
+
 ## What's new in 2.10.0
 
 **Shared `gotoWithRetry` across all sites ([PR #138](https://github.com/feldorn/free-games-claimer/pull/138) by @mateusfn98) — organically covers @zhaoxp-xyz's [#137](https://github.com/feldorn/free-games-claimer/issues/137).**

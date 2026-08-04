@@ -354,6 +354,34 @@ let runHistoryDb = null;
 // firing immediately when past-due, sleeping the remainder when not.
 let schedulerStateDb = null;
 
+// Pause/resume helpers (v2.11.0 — long-promised in docs/PANEL.md:126).
+// Persisted on `scheduler-state.json` under `paused` + `pausedAt` so the
+// setting survives panel restart. `fireScheduledRun` checks the flag on
+// every wake and skips-and-logs when paused; missed scheduled fires do
+// NOT retro-run on resume (per feedback_missed_runs_manual_recovery —
+// user manually triggers via the per-service Run buttons for whatever
+// they want to catch up on). Panel UI shows a toggle in the Sessions
+// tab; scheduler status line reads "paused" instead of a next-wake time.
+function isSchedulerPaused() {
+  return !!(schedulerStateDb && schedulerStateDb.data && schedulerStateDb.data.paused);
+}
+function schedulerPausedAt() {
+  return schedulerStateDb && schedulerStateDb.data && schedulerStateDb.data.pausedAt || null;
+}
+async function setSchedulerPaused(paused, note) {
+  if (!schedulerStateDb) return;
+  schedulerStateDb.data.paused = !!paused;
+  schedulerStateDb.data.pausedAt = paused ? new Date().toISOString() : null;
+  try { await schedulerStateDb.write(); }
+  catch (e) { console.error(`[${datetime()}] failed to persist scheduler pause state: ${e.message}`); }
+  console.log(`[${datetime()}] Scheduler ${paused ? 'paused' : 'resumed'}${note ? ' — ' + note : ''}`);
+  // Kick the wakeup barrier so both scheduler loops re-evaluate at once —
+  // otherwise a pause during a long sleep waits out the sleep before
+  // taking effect, and a resume waits out the pause-fallthrough sleep
+  // before restoring cadence.
+  fireSchedulerWakeups();
+}
+
 // Persisted user-state for the Discoveries tab — per-item "ignored" or
 // "manually-claimed" markers the user applies via row actions. Keyed by
 // `${collectorKey}::${normalizedTitle}` so the same game discovered by
@@ -2260,6 +2288,12 @@ function withScheduleLock(fn) {
 }
 
 async function fireScheduledRun({ label, sites, extraEnv, postRun }) {
+  // Pause guard (v2.11.0). Skip-and-log; missed runs do NOT retro-fire
+  // on resume — user manually triggers via per-service Run buttons.
+  if (isSchedulerPaused()) {
+    console.log(`[${datetime()}] Scheduler (${label}): paused — skipping this wake. Resume from the Sessions tab to restart cadence.`);
+    return false;
+  }
   // Preempt a forgotten/stale interactive Login session before checking
   // for a busy lock. Without this, a Login session left open for hours
   // (e.g. user clicked Login on Epic, then walked away) would block
@@ -2811,6 +2845,8 @@ async function getState() {
     mainEnabled,
     msScheduled,
     loopEnabled: schedEnabled,
+    schedulerPaused: isSchedulerPaused(),
+    schedulerPausedAt: schedulerPausedAt(),
     loopSeconds: sched.loop,
     dailyStartTime: sched.dailyStartTime,
     dailyStartDays: sched.dailyStartDays,
@@ -6574,6 +6610,27 @@ function renderScheduleTab() {
   const parts = [];
   const fmtH = h => String(h).padStart(2, '0') + ':00';
 
+  // Pause/resume toggle (v2.11.0). Sits at the very top so the pause
+  // state can't hide behind a scroll on smaller viewports. Persisted
+  // across panel restarts. Unpausing does NOT retro-fire missed
+  // scheduled runs — user manually triggers via per-service Run.
+  if (state.schedulerPaused) {
+    parts.push(
+      '<div class="sched-row" style="background:#3a2a1a;border-left:3px solid #f0a020;padding:8px 12px;margin-bottom:8px">' +
+      '<div class="sched-label">Scheduler</div>' +
+      '<div><span class="sched-value" style="color:#f0a020;font-weight:600">Paused</span>' +
+      (state.schedulerPausedAt ? '<span class="sched-count muted"> since ' + formatTimestamp(state.schedulerPausedAt, 'relative') + '</span>' : '') +
+      ' <button type="button" class="btn small" onclick="resumeScheduler()" style="margin-left:12px">Resume</button>' +
+      '<div class="muted" style="margin-top:4px;font-size:0.85em">Scheduled wakes are being skipped. Missed runs do NOT retro-fire on resume — use the per-service Run buttons on the Sessions tab to catch up on anything specific.</div>' +
+      '</div></div>'
+    );
+  } else {
+    parts.push(
+      '<div class="sched-row"><div class="sched-label">Scheduler</div>' +
+      '<div><span class="sched-value">Active</span> <button type="button" class="btn small" onclick="pauseScheduler()" style="margin-left:12px">Pause</button></div></div>'
+    );
+  }
+
   if (state.legacyCombinedMode) {
     // Legacy: single combined chain anchored 30m before MS window.
     if (state.nextScheduledRun) {
@@ -7040,6 +7097,27 @@ async function api(method, path, body) {
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(BASE_PATH + '/api' + path, opts);
   return res.json();
+}
+
+// Scheduler pause/resume (v2.11.0). Optimistic UI — flip the toast and
+// let refreshState catch up.
+async function pauseScheduler() {
+  try {
+    await api('POST', '/scheduler/pause');
+    showToast('Scheduler paused — scheduled wakes will be skipped', 'info');
+    await refreshState();
+  } catch (e) {
+    showToast('Pause failed: ' + (e && e.message || 'unknown'), 'error');
+  }
+}
+async function resumeScheduler() {
+  try {
+    await api('POST', '/scheduler/resume');
+    showToast('Scheduler resumed', 'info');
+    await refreshState();
+  } catch (e) {
+    showToast('Resume failed: ' + (e && e.message || 'unknown'), 'error');
+  }
 }
 
 function showToast(message, type = 'info', duration = 4000) {
@@ -8476,6 +8554,18 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && req.url === '/api/state') {
       sendJson(res, await getState());
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/scheduler/pause') {
+      await setSchedulerPaused(true, 'paused via panel');
+      sendJson(res, { success: true, paused: true, pausedAt: schedulerPausedAt() });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/scheduler/resume') {
+      await setSchedulerPaused(false, 'resumed via panel');
+      sendJson(res, { success: true, paused: false });
       return;
     }
 

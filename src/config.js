@@ -168,6 +168,12 @@ export const cfg = {
   ae_password: process.env.AE_PASSWORD || process.env.PASSWORD,
   // experimental
   pg_redeem: pg.redeem ?? false, // prime-gaming: redeem keys on external stores
+  // Prime→Steam auto-redeem (v2.11.0). When true, Prime captures every Steam
+  // key it sees and queues it to data/pending-steam-keys.json; the following
+  // steam.js run drains the queue by posting each key to Steam's
+  // /account/registerkey using the Steam-side authenticated session. Off by
+  // default — keys stay in the manual-redeem notification path when disabled.
+  pg_steam_autoredeem: process.env.PG_STEAM_AUTOREDEEM === '1' || pg.steamAutoredeem === true,
   // Max cross-run retries for the GOG auto-redeem loop in gog.js. When GOG's
   // /v1/bonusCodes/ returns reason: "captcha" (their rate-limit signal), the
   // code stays pending and gog.js retries on the next daily run. Default 3.
@@ -184,4 +190,14 @@ export const cfg = {
   // helps the at-drop wake punch through DnD/quiet-hours on supporting
   // notifiers (Pushover most notably).
   lenovo_notify_priority: lenovo.notifyPriority || 'normal',
+  // CAPTCHA opt-in (v2.11.0 / 2D). Zero effect when unset — the solver
+  // helpers early-return null and callers keep today's fail-and-diag
+  // behaviour. Only when CAPTCHA_API_KEY is set does any provider HTTP
+  // traffic leave the container.
+  captcha_provider: process.env.CAPTCHA_PROVIDER || '2captcha',
+  captcha_api_key: process.env.CAPTCHA_API_KEY || null,
+  // Steam Points Shop free-weekly-item claim (v2.11.0 / 2E). Opt-in via
+  // STEAM_POINTS_SHOP_WEEKLY=1 — off by default because the Points Shop
+  // layout is more variable than the main store, so runs are best-effort.
+  steam_points_shop_weekly: process.env.STEAM_POINTS_SHOP_WEEKLY === '1',
 };

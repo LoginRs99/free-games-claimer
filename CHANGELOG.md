@@ -4,6 +4,64 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.0
+
+**Batch feature release — 3 new notify-only watchers, Prime→Steam auto-redeem, opt-in CAPTCHA helper, Steam Points Shop weekly item, pause/resume scheduler, plus MS Rewards resilience fixes. Ships on top of the [PR #139](https://github.com/feldorn/free-games-claimer/pull/139) repository reorganisation.**
+
+### Repository layout ([PR #139](https://github.com/feldorn/free-games-claimer/pull/139) by @mateusfn98)
+
+Claim scrapers now live in `src/platforms/`; the panel server is now `src/panel/panel.js`. Existing `CLAIM_CMD` / `CLAIM_CMD_MANUAL` env values still work — a compatibility resolver rewrites `gog`, `gog.js`, `node gog.js`, and full-path forms to the new locations at boot (covered by `test/claim-cmd.js`). Subpath aliases `#src/*`, `#platforms/*`, `#dataDir`, `#rootDir` are declared in `package.json`. Node engines bumped to `>=20.6.0` for synchronous `import.meta.resolve` — Docker users are unaffected. Third consecutive PR from @mateusfn98 — thanks.
+
+### New notify-only watchers
+
+- **IndieGala** (`src/platforms/indiegala.js`). Public freebies.indiegala.com scraper with API interception + DOM fallback. Runs alongside the existing GamerPower discovery — same site-registry pattern, same aggregated notification body, dedup key `indiegala::<matchKey(stripped)>`. Off by default; toggle in Settings → IndieGala.
+- **PSN / PlayStation Plus** (`src/platforms/psn-watcher.js`) — GamerPower-backed filter on `\bps[3-5]\b|playstation`. Zero-auth (no browser needed), same aggregated notification. Off by default. This is the notify-only follow-through on the closed [PR #55](https://github.com/feldorn/free-games-claimer/pull/55) — auto-claim is infeasible (Sony fingerprinting), but "ping me when new PS Plus lands so I can claim on my console" is not.
+- **Xbox / Game Pass** (`src/platforms/xbox-watcher.js`) — same shape for `\bxbox\b`. Catches Free Play Days, GwG rotations, promo drops.
+
+### Prime → Steam auto-redeem (opt-in)
+
+`PG_STEAM_AUTOREDEEM=1` enables the drain path: Prime captures Steam keys to a shared queue at `data/pending-steam-keys.json`; the following `steam.js` run posts each key to `store.steampowered.com/account/registerkey` using the authenticated Steam session. Same daily loop (Prime claimOrder 2 → Steam claimOrder 4), so keys ship same-day. Retries transient failures up to 5 attempts across days; permanent failures (already owned, invalid code, region-locked) drop from the queue with a notification. Off by default — leave off to keep the manual-redeem-URL notification path.
+
+### CAPTCHA opt-in helper (`src/captcha.js`)
+
+Provider-agnostic `solveHcaptcha` / `solveRecaptcha` / `attemptAutoSolveHcaptcha` — 2Captcha REST as the initial provider. Zero effect when unconfigured (`CAPTCHA_API_KEY` unset → helpers return null, callers keep today's fail-and-diagnostic behaviour). Call-site wiring in EG/FAB deferred pending real captured captcha surface. Helper contract is documented in the file — third-party callers or forks can wire it into any script with `if (const token = await solveHcaptcha(page, {siteKey, url}); token) …`.
+
+### Steam Points Shop free weekly item (opt-in)
+
+`STEAM_POINTS_SHOP_WEEKLY=1` enables best-effort weekly claim of the free Points Shop item (badge / animated avatar frame / sticker). ISO-week dedup in `data/steam.json`. Runs at the tail of the Steam claim pass. Never fatal — the Points Shop layout is more variable than the main store, so failures log and continue.
+
+### MS Rewards — locale-portable point-balance read + zero-credit abort ([#135](https://github.com/feldorn/free-games-claimer/issues/135) @dabziuebu4egh2)
+
+- `readPointsBalance` gains aria-label variants for Spanish/Portuguese/Italian/German/Polish/Hungarian/Finnish/Norwegian/Czech/Russian/Chinese/Japanese/Korean, plus locale-portable text labels ("Puntos disponibles", "Points disponibles", "Verfügbare Punkte", etc.). RSC path remains the primary reader — this is fallback coverage.
+- **Zero-credit abort in the search loop.** Every 8 completed searches, `executeBingSearches` re-reads the balance via RSC. If the balance hasn't moved off the starting value, Bing is silently rejecting points for this account/region (per @dabziuebu4egh2's report: searches ran, `Points after +0`) — the loop aborts to reduce anti-bot footprint. The user sees a warn line and MS runs less brittle-ly on the next attempt.
+
+Quiz automation, punch-card completion, and streak-protection heuristics: deferred pending live-account test infrastructure. The existing card-click flow already fires quiz cards on click — points credit on any subsequent Bing engagement, so this is not a regression, just leaves the "point per quiz" ceiling on the table.
+
+### Pause/resume scheduler (long-promised in `docs/PANEL.md`)
+
+Schedule tab now shows a **Pause** / **Resume** toggle at the very top. State persists across panel restarts (in `data/scheduler-state.json`). While paused, `fireScheduledRun` skips every scheduled wake — main + MS + digest + Lenovo drops + GitHub watch — with a single log line and no side effects. **Missed runs do NOT retro-fire on resume** (per `feedback_missed_runs_manual_recovery`) — use the per-service Run buttons on the Sessions tab to catch up on whatever you want to run.
+
+### Site registry changes
+
+- New site entries: `indiegala`, `psn-watcher`, `xbox-watcher` (all `scheduleKind: 'watch-only'`, opt-in, notify-only).
+- Full claim order: `prime-gaming` (2), `gog` (2.5), `epic-games` (3), `fab` (3.5), `steam` (4), `aliexpress` (5), `ubisoft` (6), `humble-bundle` (7), `fanatical` (8), `psn-watcher` (8.3), `xbox-watcher` (8.4), `indiegala` (8.5), `microsoft` (9), `lenovo-gaming` (10).
+- Prime Gaming config field added: `steamAutoredeem` toggle (PG_STEAM_AUTOREDEEM).
+
+### Env vars added
+
+`PG_STEAM_AUTOREDEEM`, `INDIEGALA_ACTIVE`, `PSN_ACTIVE`, `XBOX_ACTIVE`, `INDIEGALA_PAGE_URL`, `CAPTCHA_PROVIDER`, `CAPTCHA_API_KEY`, `STEAM_POINTS_SHOP_WEEKLY`.
+
+### What did NOT ship
+
+- Real quiz-answer automation for MS Rewards (needs live account for reliable selectors).
+- Punch-card multi-step orchestration (same reason).
+- EG hCaptcha + FAB checkout captcha call-site integration (helper ships; call-site wiring deferred pending captured captcha shape).
+- Streak-protection heuristics (requires per-account daily-cap knowledge).
+
+Ships on the site-registry pattern; every new watcher is one entry in `src/sites.js` plus one file in `src/platforms/`. Same shape as fanatical/humble/lenovo — nothing new to learn for a maintainer touching one of these.
+
+---
+
 ## What's new in 2.10.1
 
 **Fix: panel's local `stripGpTail` override was masking the shared multi-word fix — silent daily-notify loop on "Ignored" `(Steam) Key Giveaway` entries.**

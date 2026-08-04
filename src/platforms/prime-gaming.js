@@ -3,6 +3,7 @@ import { authenticator } from 'otplib';
 import { resolve, jsonDb, datetime, filenamify, prompt, confirm, notify, html_game_list, log } from '#src/util.js';
 import { cfg } from '#src/config.js';
 import { siteVersion } from '#src/sites.js';
+import { enqueueSteamKey } from '#src/pending-steam-keys.js';
 
 const screenshot = (...a) => resolve(cfg.dir.screenshots, 'prime-gaming', ...a);
 
@@ -317,7 +318,52 @@ try {
         'microsoft store': 'https://account.microsoft.com/billing/redeem',
         xbox: 'https://account.microsoft.com/billing/redeem',
         'legacy games': 'https://www.legacygames.com/primedeal',
+        // Steam intentionally NOT here — inline redeem would need the
+        // Steam session, which prime-gaming's browser context doesn't
+        // carry. Steam keys go through the queue handoff in the special
+        // branch below so steam.js can drain them via its own session.
+        steam: 'https://store.steampowered.com/account/registerkey',
       };
+      // Steam handoff branch (v2.11.0 / 2A). We still extract the code
+      // here — same selectors as the inline-redeem branch below — but
+      // instead of trying to redeem via prime-gaming's browser (no
+      // Steam session), we queue the code to data/pending-steam-keys.json
+      // for steam.js to drain later in the same daily loop (Prime
+      // claimOrder 2 → Steam claimOrder 4). When PG_STEAM_AUTOREDEEM
+      // is off, the notification stays the manual-redeem link as before.
+      if (store === 'steam' || store === 'steampowered.com') {
+        let code = null;
+        try {
+          code = await Promise.any([
+            page.inputValue('input[type="text"]'),
+            page.textContent('[data-a-target="ClaimStateClaimCodeContent"]').then(s => s.replace(/^Your code:\s*/i, '').trim()),
+          ]);
+        } catch { /* code selectors missed — fall through to the standard 'not implemented' path */ }
+        if (code) {
+          db.data[user][title].code = code;
+          const redeem_url = 'https://store.steampowered.com/account/registerkey?key=' + encodeURIComponent(code);
+          if (cfg.pg_steam_autoredeem) {
+            const enqueued = enqueueSteamKey({ title, code });
+            const status = enqueued ? 'queued for steam.js auto-redeem' : 'already in queue';
+            log.ok(`${title} — ${status}`);
+            db.data[user][title].status = 'claimed, queued for Steam';
+            claimedCount++;
+            notify_game.status = `${status} — steam.js will redeem next`;
+            notify_game.url = redeem_url;
+            notify_game.details = `${redeem_url} (code: ${code})`;
+          } else {
+            log.ok(`${title} — claimed on Steam (manual redeem — set PG_STEAM_AUTOREDEEM=1 for auto)`);
+            db.data[user][title].status = 'claimed';
+            needsActionCount++;
+            notify_game.status = 'redeem on Steam';
+            notify_game.url = redeem_url;
+            notify_game.details = `${redeem_url} (code: ${code})`;
+          }
+          await page.screenshot({ path: screenshot('external', `${filenamify(title)}.png`), fullPage: true });
+          continue; // don't fall into the generic redeem branch below
+        }
+        // fall through if code extraction failed → generic 'not implemented' path
+      }
       if (store in redeem) {
         const code = await Promise.any([page.inputValue('input[type="text"]'), page.textContent('[data-a-target="ClaimStateClaimCodeContent"]').then(s => s.replace('Your code: ', ''))]); // input: Legacy Games; text: gog.com
         if (store == 'legacy games') { // may be different URL like https://legacygames.com/primeday/puzzleoftheyear/

@@ -8,7 +8,7 @@ A self-hosted scheduler that claims free games and rewards across multiple store
 
 Discovery isn't limited to each store's own free-game feed — the panel cross-references community aggregators ([gamerpower.com](https://www.gamerpower.com/) and [r/FreeGameFindings](https://www.reddit.com/r/FreeGameFindings/)) and picks up launch-day indie promos and storefront-side mystery drops that the first-party feeds miss.
 
-Originally derived from [vogler/free-games-claimer](https://github.com/vogler/free-games-claimer) (dev branch). The control panel, in-app settings UI, claim-history stats, scheduler with hot-reload, AliExpress reintegration, captcha pause + manual-solve handoff, the Steam discovery migration, the Microsoft Rewards collector, the FAB asset claimer, and the Ubisoft / Humble / Fanatical / Lenovo watchers are all additions in this fork. Per-release changes are tracked in [CHANGELOG.md](CHANGELOG.md); [MODIFICATIONS.md](MODIFICATIONS.md) holds a frozen v2.4 snapshot of the diff vs. upstream for historical context.
+Originally derived from [vogler/free-games-claimer](https://github.com/vogler/free-games-claimer) (dev branch). The control panel, in-app settings UI, claim-history stats, scheduler with hot-reload, AliExpress reintegration, captcha pause + manual-solve handoff, the Steam discovery migration, the Microsoft Rewards collector, the FAB asset claimer, and the Ubisoft / Humble / Fanatical / Lenovo / IndieGala / PSN Plus / Xbox watchers are all additions in this fork. Per-release changes are tracked in [CHANGELOG.md](CHANGELOG.md); [MODIFICATIONS.md](MODIFICATIONS.md) holds a frozen v2.4 snapshot of the diff vs. upstream for historical context.
 
 Services are grouped by what they actually do.
 
@@ -16,10 +16,10 @@ Services are grouped by what they actually do.
 
 | Service | Notes |
 |---|---|
-| <img alt="logo prime-gaming" src="https://github.com/user-attachments/assets/7627a108-20c6-4525-a1d8-5d221ee89d6e" width="24" align="middle" /> [Amazon Prime Gaming](https://gaming.amazon.com) | Free games + GOG / MS Store / Xbox keys delivered via Prime |
+| <img alt="logo prime-gaming" src="https://github.com/user-attachments/assets/7627a108-20c6-4525-a1d8-5d221ee89d6e" width="24" align="middle" /> [Amazon Prime Gaming](https://gaming.amazon.com) | Free games + GOG / MS Store / Xbox keys delivered via Prime. **Prime→Steam auto-redeem** (opt-in, `PG_STEAM_AUTOREDEEM=1`) queues Steam keys for auto-redeem on the same day's Steam run. |
 | <img alt="logo epic-games" src="https://github.com/user-attachments/assets/82e9e9bf-b6ac-4f20-91db-36d2c8429cb6" width="24" align="middle" /> [Epic Games Store](https://www.epicgames.com/store/free-games) | Weekly free-game claim |
 | <img alt="logo gog" src="https://github.com/user-attachments/assets/49040b50-ee14-4439-8e3c-e93cafd7c3a5" width="24" align="middle" /> [GOG](https://www.gog.com) | Homepage giveaways + catalog watch for tag-flagged free items. 2FA-enabled accounts can paste `GOG_OTP_BACKUP_CODES` to auto-consume backup codes on prompt. |
-| <img alt="logo steam" src="https://store.steampowered.com/favicon.ico" width="24" align="middle" /> [Steam](https://store.steampowered.com) | Free-to-keep promotions only (not F2P or free weekends) |
+| <img alt="logo steam" src="https://store.steampowered.com/favicon.ico" width="24" align="middle" /> [Steam](https://store.steampowered.com) | Free-to-keep promotions only (not F2P or free weekends). Optional weekly claim of Steam's [Points Shop free item](https://store.steampowered.com/points/shop/c/freeitems) badge/avatar-frame/sticker *(opt-in, off by default)*. |
 | 🎨 [FAB](https://www.fab.com/limited-time-free) | Monthly Limited-Time Free 3D assets on Epic's content marketplace. Reuses your Epic Games session via SSO — no second login. *(opt-in, default off)* |
 
 > **Discovery via community aggregators.** Epic and Steam claim eligible games surfaced by [gamerpower.com](https://www.gamerpower.com/) or [r/FreeGameFindings](https://www.reddit.com/r/FreeGameFindings/) that don't show up in the storefront's own feed. GOG entries from the same aggregators surface as notify-only items so you can claim them through the panel's noVNC view. See the [Discoveries tab](docs/PANEL.md#discoveries-tab) for the live list with AUTO / NOTIFY / CLAIMED / SKIP / MANUAL badges.
@@ -39,6 +39,9 @@ Services are grouped by what they actually do.
 | 📦 [Humble Bundle](https://www.humblebundle.com/store) | Pings on new free items in the Humble store *(opt-in)* |
 | 🔑 [Fanatical](https://www.fanatical.com/en/free-games-keys) | Pings on new free Steam-key giveaways *(opt-in)* |
 | 🚀 [Lenovo Gaming Key Drops](https://gaming.lenovo.com/game-key-drops) | Tracks scheduled drops + fires push notifications **1h before / 5min before / at drop time** so you can land the queue before keys run out *(opt-in)* |
+| 🎲 [IndieGala](https://freebies.indiegala.com/) | Pings on new giveaways on IndieGala's public freebies page — a fast-rotating source of full-game DRM-free + Steam-key promos. Earlier + more precise than the GamerPower aggregator surfaces the same items. *(opt-in)* |
+| 🕹 [PlayStation Plus](https://store.playstation.com/en-us/pages/deals) | Notify-only tracker for PSN Plus / free-on-PSN promos — Sony's anti-bot fingerprinting on their storefront makes auto-claim infeasible, so this gives you the "action needed" ping to claim on your console. Backed by the GamerPower aggregator. *(opt-in)* |
+| 🎮 [Xbox / Game Pass](https://www.xbox.com/en-US/live/free-play-days) | Notify-only tracker for Xbox Free Play Days, Game Pass promos, and cross-platform DLC/loot giveaways. Same GamerPower backing as PSN. *(opt-in)* |
 
 > **Why notify-only?** These storefronts have *dynamic* claim flows — newsletter prompts, region acks, "are you sure" modals, and other gates that the sites add and remove without notice — so any scripted claim path is brittle and silently breaks. Some also chain through multiple sites with one-shot vouchers (Lenovo → GamesPlanet → Steam), where a flaky auto-claim wastes the only attempt. Watchers detect *what's available* reliably; the actual grab is left to you, where a human can shrug off a UI change the script can't.
 
@@ -56,7 +59,7 @@ Uses [patchright](https://github.com/nicbarker/patchright) (Chromium with built-
 
 ### 🎮 Collection automation *(what the tool does when you're not looking)*
 
-- **Two-track scheduler with hot-reload** — main claim chain (Prime / Epic / GOG / Steam / FAB) and Microsoft Rewards run on independent schedules so the 30-45 min MS window doesn't block the rest.
+- **Two-track scheduler with hot-reload** — main claim chain (Prime / Epic / GOG / Steam / FAB) and Microsoft Rewards run on independent schedules so the 30-45 min MS window doesn't block the rest. **Pause/resume toggle** on the Schedule tab suspends scheduled wakes without killing the container — useful during storefront outages, region trips, or fingerprint testing.
 - **Captcha pause + noVNC handoff** — when a script can't solve a challenge, it pauses for 10 min, fires a deep-link push notification, and resumes when you solve it via the embedded noVNC viewer.
 - **Cookie upload fallback** — for accounts fingerprint-blocked from in-container login: paste a JSON cookie export from your desktop browser and the panel imports the session.
 
@@ -70,6 +73,7 @@ Uses [patchright](https://github.com/nicbarker/patchright) (Chromium with built-
 ### 📊 Alerts, logs & history *(what happened, what needs attention)*
 
 - **Alerts tab** — single place to see everything that needs your attention: pending code redemptions (Prime + Steam) with Mark redeemed / Dismiss actions, stale-session warnings with one-click re-login, unread items in Discoveries, and one-click *Share to GitHub* for any error caught during a run. Diagnostic submissions carry auto-redacted webhooks/tokens, a config snapshot (scheduler mode, active services, per-service flags, `LANG`, `TZ`), and 25+ lines of surrounding log context — nothing leaves your host without your explicit click. Sections hide when empty, so a healthy run leaves the tab visibly blank.
+- **Notifications journal** *(v2.11.0+)* — audit trail of every apprise push fgc has ever fired. Filter by service / kind / status / free-text; expand rows for the full body with clickable URLs. Rolling 500-entry cap, 24h floor so recent items are always visible with "Load more" paging beneath. Answers the "did this actually fire?" question that used to require SSH-ing to `docker logs`.
 - **Stats tab** — KPI tiles, per-service tables, 30-day claim chart, recent claims (configurable — default 200, up to 500), Microsoft Rewards balance trend.
 - **Run history** — completed runs persisted with full log buffers and summary counters (default 200, configurable up to 500), browsable from the Logs tab.
 

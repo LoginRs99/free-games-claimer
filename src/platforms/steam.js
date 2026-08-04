@@ -1,15 +1,19 @@
-import { launchContext } from './src/browser.js';
+import { launchContext, gotoWithRetry } from '#src/browser.js';
 import { writeFileSync } from 'node:fs';
-import { resolve, jsonDb, datetime, filenamify, prompt, notify, html_game_list, log, dataDir, matchKey, stripGpTail, getDiscoveryUserMarkedKeys } from './src/util.js';
-import { cfg } from './src/config.js';
-import { siteVersion } from './src/sites.js';
-import { fetchGamerPowerGiveaways, filterFor as filterGpFor, resolveGamerPowerHref } from './src/gamerpower.js';
-import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfClean } from './src/freegamefindings.js';
+import { resolve, jsonDb, datetime, filenamify, prompt, notify, html_game_list, log, dataDir, matchKey, stripGpTail, getDiscoveryUserMarkedKeys } from '#src/util.js';
+import { cfg } from '#src/config.js';
+import { siteVersion } from '#src/sites.js';
+import { fetchGamerPowerGiveaways, filterFor as filterGpFor, resolveGamerPowerHref } from '#src/gamerpower.js';
+import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfClean } from '#src/freegamefindings.js';
+import { loadPendingKeys, dropKey, bumpKeyAttempt } from '#src/pending-steam-keys.js';
 
 const screenshot = (...a) => resolve(cfg.dir.screenshots, 'steam', ...a);
 
 const URL_STORE = cfg.steam_page_url || 'https://store.steampowered.com'; // STEAM_PAGE_URL override
 const URL_LOGIN = `${URL_STORE}/login/`;
+
+// Retry policy shared by this site's top-level navigations.
+const STEAM_NAV = { attempts: 2, backoffMs: 5000, siteId: 'steam' };
 
 // All our store-page selectors and success indicators key off English text
 // ("Add to Account", "has been added to your account", etc.). The
@@ -314,7 +318,7 @@ try {
     { name: 'Steam_Language', value: 'english', domain: 'store.steampowered.com', path: '/' },
   ]);
 
-  await page.goto(withEnglish(URL_STORE), { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, withEnglish(URL_STORE), STEAM_NAV);
   await page.waitForTimeout(3000);
 
   const isLoggedIn = async () => {
@@ -325,7 +329,7 @@ try {
   while (!await isLoggedIn()) {
     log.warn('Not signed in to Steam');
     if (cfg.nowait) process.exit(1);
-    await page.goto(withEnglish(URL_LOGIN), { waitUntil: 'domcontentloaded' });
+    await gotoWithRetry(page, withEnglish(URL_LOGIN), STEAM_NAV);
     if (!cfg.debug) context.setDefaultTimeout(cfg.login_timeout);
     log.status('Login timeout', `${cfg.login_timeout / 1000}s`);
     if (cfg.steam_email && cfg.steam_password) log.info('Using credentials from environment');
@@ -390,7 +394,7 @@ try {
       await page.waitForSelector('#account_pulldown', { timeout: cfg.login_timeout });
     }
     if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
-    await page.goto(withEnglish(URL_STORE), { waitUntil: 'domcontentloaded' });
+    await gotoWithRetry(page, withEnglish(URL_STORE), STEAM_NAV);
     await page.waitForTimeout(2000);
   }
 
@@ -795,6 +799,147 @@ try {
     display: 'alreadyOwned',
     alreadyOwned: existed,
   });
+
+  // Prime→Steam key drain (v2.11.0 / 2A). If Prime queued Steam keys
+  // this run (or a previous run left transient failures), redeem them
+  // now via /account/registerkey using the current Steam session.
+  // Silently no-op when the queue is empty — the module read is cheap
+  // and the file may not exist on setups that never opted into
+  // PG_STEAM_AUTOREDEEM.
+  const pending = loadPendingKeys();
+  if (pending.length) {
+    log.section(`Prime→Steam auto-redeem (${pending.length} pending)`);
+    let redeemed = 0, alreadyOwned = 0, failed = 0, deferred = 0;
+    for (const entry of pending) {
+      const { title, code } = entry;
+      try {
+        await page.goto('https://store.steampowered.com/account/registerkey', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        // registerkey redirects to /login if the session is stale — check the
+        // final URL and bail on this key (leave it in queue for next run
+        // when the user has re-authenticated).
+        if (/\/login\//.test(page.url())) {
+          log.warn(`Prime→Steam: ${title} — Steam session not authenticated, leaving in queue`);
+          bumpKeyAttempt(code, 'not signed in');
+          deferred++;
+          break; // no point trying more keys with a dead session
+        }
+        const codeInput = page.locator('#product_key');
+        if (await codeInput.count() === 0) {
+          log.warn(`Prime→Steam: ${title} — register-key input not found, page shape may have changed`);
+          bumpKeyAttempt(code, 'input not found');
+          deferred++;
+          continue;
+        }
+        await codeInput.fill(code);
+        // Steam's "Accept TOS" checkbox must be checked before the register button enables.
+        const tos = page.locator('#accept_ssa');
+        if (await tos.count() > 0) await tos.check({ timeout: 2000 }).catch(() => {});
+        await page.locator('#register_btn').click({ timeout: 8000 });
+        // Wait for either #receipt_area (success), #error_display (failure),
+        // or a modal — whichever lands first.
+        const result = await Promise.race([
+          page.locator('#receipt_area').waitFor({ state: 'visible', timeout: 15000 }).then(() => 'success'),
+          page.locator('#error_display, .error').waitFor({ state: 'visible', timeout: 15000 }).then(() => 'error'),
+        ]).catch(() => 'timeout');
+        if (result === 'success') {
+          log.ok(`Prime→Steam: ${title} — redeemed`);
+          dropKey(code);
+          redeemed++;
+          notify_games.push({ title, url: 'https://store.steampowered.com/account/registerkey', status: 'auto-redeemed on Steam' });
+        } else if (result === 'error') {
+          const errText = await page.locator('#error_display, .error').first().innerText({ timeout: 2000 }).catch(() => 'unknown');
+          const errLower = String(errText || '').toLowerCase();
+          // Permanent failures — drop from queue immediately.
+          const isPermanent = /already|invalid|not valid|not activatable|activated on a different|region/i.test(errLower);
+          if (isPermanent) {
+            if (/already/i.test(errLower)) {
+              log.info(`Prime→Steam: ${title} — already owned`);
+              alreadyOwned++;
+            } else {
+              log.warn(`Prime→Steam: ${title} — permanent failure (${errText.split('\n')[0].slice(0, 100)})`);
+              failed++;
+              notify_games.push({ title, url: 'https://store.steampowered.com/account/registerkey?key=' + encodeURIComponent(code), status: `Steam refused: ${errText.split('\n')[0].slice(0, 80)}` });
+            }
+            dropKey(code);
+          } else {
+            log.warn(`Prime→Steam: ${title} — transient error (${errText.split('\n')[0].slice(0, 100)}), will retry`);
+            bumpKeyAttempt(code, errText.split('\n')[0]);
+            deferred++;
+          }
+        } else {
+          log.warn(`Prime→Steam: ${title} — no response after 15s, will retry`);
+          bumpKeyAttempt(code, 'timeout waiting for response');
+          deferred++;
+        }
+        // Human-paced pause between keys to avoid hammering Steam's endpoint.
+        await page.waitForTimeout(3000);
+      } catch (e) {
+        log.warn(`Prime→Steam: ${title} — ${String(e.message || e).split('\n')[0]}`);
+        bumpKeyAttempt(code, String(e.message || e));
+        deferred++;
+      }
+    }
+    log.info(`Prime→Steam auto-redeem: ${redeemed} redeemed, ${alreadyOwned} already owned, ${failed} refused, ${deferred} deferred`);
+  }
+
+  // Steam Points Shop free-weekly-item claim (v2.11.0 / 2E). Opt-in via
+  // STEAM_POINTS_SHOP_WEEKLY=1. Steam ships a rotating "free weekly"
+  // Points Shop item (badge / animated avatar frame / sticker) that
+  // any logged-in account can claim at zero cost. Layout is more
+  // variable than the main store, so this is best-effort: we try the
+  // known free-items surface, click the first "Purchase" button on an
+  // item priced at 0 points, and record the ISO-week for dedup. Any
+  // exception logs and moves on — never fatal for the main run.
+  if (cfg.steam_points_shop_weekly) {
+    const isoWeek = (() => {
+      const d = new Date();
+      const oneJan = new Date(d.getFullYear(), 0, 1);
+      const days = Math.floor((d - oneJan) / 86400000);
+      const week = Math.ceil((days + oneJan.getDay() + 1) / 7);
+      return `${d.getFullYear()}-W${String(week).padStart(2, '0')}`;
+    })();
+    db.data[user] ||= {};
+    db.data[user].__pointsShop ||= {};
+    if (db.data[user].__pointsShop[isoWeek]) {
+      log.info(`Steam Points Shop: weekly item for ${isoWeek} already claimed`);
+    } else {
+      log.section('Steam Points Shop (weekly item)');
+      try {
+        await page.goto('https://store.steampowered.com/points/shop/c/freeitems', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(3000);
+        // Free-item cards on the Points Shop show a "Purchase for 0 Points"
+        // / "Add to profile for 0 Points" button. Match a wide union of the
+        // button variants Steam has used; the actual text used varies by
+        // item type (badge / avatar frame / sticker / animated background).
+        // Wait briefly for the SPA to hydrate before scanning.
+        const btn = page.locator([
+          'button:has-text("0 Points")',
+          'button:has-text("Free")',
+          'button:has-text("Purchase for 0")',
+          'button:has-text("Add to Profile")',
+          '[class*="PurchaseButton"]:has-text("0")',
+        ].join(', ')).first();
+        if (await btn.count() === 0) {
+          log.info(`Steam Points Shop: no free items visible this week (checked ${isoWeek})`);
+          db.data[user].__pointsShop[isoWeek] = { status: 'nothing', checkedAt: datetime() };
+        } else {
+          await btn.click({ timeout: 5000 });
+          // Steam shows a purchase-confirmation dialog with a "Purchase"
+          // button. Some free items skip this step and credit immediately.
+          const confirm = page.locator('button:has-text("Purchase"):not(:has-text("0 Points"))').first();
+          if (await confirm.count() > 0) {
+            await confirm.click({ timeout: 3000 }).catch(() => {});
+          }
+          await page.waitForTimeout(2500);
+          log.ok(`Steam Points Shop: claimed weekly item for ${isoWeek}`);
+          db.data[user].__pointsShop[isoWeek] = { status: 'claimed', claimedAt: datetime() };
+          notify_games.push({ title: `Steam Points Shop weekly item (${isoWeek})`, url: 'https://store.steampowered.com/points/shop/c/freeitems', status: 'claimed' });
+        }
+      } catch (e) {
+        log.warn(`Steam Points Shop: ${String(e.message || e).split('\n')[0]} — will retry next run`);
+      }
+    }
+  }
 } catch (error) {
   process.exitCode ||= 1;
   log.exception(error);

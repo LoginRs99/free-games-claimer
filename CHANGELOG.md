@@ -4,6 +4,99 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.0
+
+**Batch feature release — 3 new notify-only watchers, Prime→Steam auto-redeem, opt-in CAPTCHA helper, Steam Points Shop weekly item, pause/resume scheduler, plus MS Rewards resilience fixes. Ships on top of the [PR #139](https://github.com/feldorn/free-games-claimer/pull/139) repository reorganisation.**
+
+### Repository layout ([PR #139](https://github.com/feldorn/free-games-claimer/pull/139) by @mateusfn98)
+
+Claim scrapers now live in `src/platforms/`; the panel server is now `src/panel/panel.js`. Existing `CLAIM_CMD` / `CLAIM_CMD_MANUAL` env values still work — a compatibility resolver rewrites `gog`, `gog.js`, `node gog.js`, and full-path forms to the new locations at boot (covered by `test/claim-cmd.js`). Subpath aliases `#src/*`, `#platforms/*`, `#dataDir`, `#rootDir` are declared in `package.json`. Node engines bumped to `>=20.6.0` for synchronous `import.meta.resolve` — Docker users are unaffected. Third consecutive PR from @mateusfn98 — thanks.
+
+### New notify-only watchers
+
+- **IndieGala** (`src/platforms/indiegala.js`). Public freebies.indiegala.com scraper with API interception + DOM fallback. Runs alongside the existing GamerPower discovery — same site-registry pattern, same aggregated notification body, dedup key `indiegala::<matchKey(stripped)>`. Off by default; toggle in Settings → IndieGala.
+- **PSN / PlayStation Plus** (`src/platforms/psn-watcher.js`) — GamerPower-backed filter on `\bps[3-5]\b|playstation`. Zero-auth (no browser needed), same aggregated notification. Off by default. This is the notify-only follow-through on the closed [PR #55](https://github.com/feldorn/free-games-claimer/pull/55) — auto-claim is infeasible (Sony fingerprinting), but "ping me when new PS Plus lands so I can claim on my console" is not.
+- **Xbox / Game Pass** (`src/platforms/xbox-watcher.js`) — same shape for `\bxbox\b`. Catches Free Play Days, GwG rotations, promo drops.
+
+### Prime → Steam auto-redeem (opt-in)
+
+`PG_STEAM_AUTOREDEEM=1` enables the drain path: Prime captures Steam keys to a shared queue at `data/pending-steam-keys.json`; the following `steam.js` run posts each key to `store.steampowered.com/account/registerkey` using the authenticated Steam session. Same daily loop (Prime claimOrder 2 → Steam claimOrder 4), so keys ship same-day. Retries transient failures up to 5 attempts across days; permanent failures (already owned, invalid code, region-locked) drop from the queue with a notification. Off by default — leave off to keep the manual-redeem-URL notification path.
+
+### CAPTCHA opt-in helper (`src/captcha.js`)
+
+Provider-agnostic `solveHcaptcha` / `solveRecaptcha` / `attemptAutoSolveHcaptcha` — 2Captcha REST as the initial provider. Zero effect when unconfigured (`CAPTCHA_API_KEY` unset → helpers return null, callers keep today's fail-and-diagnostic behaviour). Call-site wiring in EG/FAB deferred pending real captured captcha surface. Helper contract is documented in the file — third-party callers or forks can wire it into any script with `if (const token = await solveHcaptcha(page, {siteKey, url}); token) …`.
+
+### Steam Points Shop free weekly item (opt-in)
+
+`STEAM_POINTS_SHOP_WEEKLY=1` enables best-effort weekly claim of the free Points Shop item (badge / animated avatar frame / sticker). ISO-week dedup in `data/steam.json`. Runs at the tail of the Steam claim pass. Never fatal — the Points Shop layout is more variable than the main store, so failures log and continue.
+
+### MS Rewards — locale-portable point-balance read + zero-credit abort ([#135](https://github.com/feldorn/free-games-claimer/issues/135) @dabziuebu4egh2)
+
+- `readPointsBalance` gains aria-label variants for Spanish/Portuguese/Italian/German/Polish/Hungarian/Finnish/Norwegian/Czech/Russian/Chinese/Japanese/Korean, plus locale-portable text labels ("Puntos disponibles", "Points disponibles", "Verfügbare Punkte", etc.). RSC path remains the primary reader — this is fallback coverage.
+- **Zero-credit abort in the search loop.** Every 8 completed searches, `executeBingSearches` re-reads the balance via RSC. If the balance hasn't moved off the starting value, Bing is silently rejecting points for this account/region (per @dabziuebu4egh2's report: searches ran, `Points after +0`) — the loop aborts to reduce anti-bot footprint. The user sees a warn line and MS runs less brittle-ly on the next attempt.
+
+Quiz automation, punch-card completion, and streak-protection heuristics: deferred pending live-account test infrastructure. The existing card-click flow already fires quiz cards on click — points credit on any subsequent Bing engagement, so this is not a regression, just leaves the "point per quiz" ceiling on the table.
+
+### Pause/resume scheduler (long-promised in `docs/PANEL.md`)
+
+Schedule tab now shows a **Pause** / **Resume** toggle at the very top. State persists across panel restarts (in `data/scheduler-state.json`). While paused, `fireScheduledRun` skips every scheduled wake — main + MS + digest + Lenovo drops + GitHub watch — with a single log line and no side effects. **Missed runs do NOT retro-fire on resume** (per `feedback_missed_runs_manual_recovery`) — use the per-service Run buttons on the Sessions tab to catch up on whatever you want to run.
+
+### Site registry changes
+
+- New site entries: `indiegala`, `psn-watcher`, `xbox-watcher` (all `scheduleKind: 'watch-only'`, opt-in, notify-only).
+- Full claim order: `prime-gaming` (2), `gog` (2.5), `epic-games` (3), `fab` (3.5), `steam` (4), `aliexpress` (5), `ubisoft` (6), `humble-bundle` (7), `fanatical` (8), `psn-watcher` (8.3), `xbox-watcher` (8.4), `indiegala` (8.5), `microsoft` (9), `lenovo-gaming` (10).
+- Prime Gaming config field added: `steamAutoredeem` toggle (PG_STEAM_AUTOREDEEM).
+
+### Env vars added
+
+`PG_STEAM_AUTOREDEEM`, `INDIEGALA_ACTIVE`, `PSN_ACTIVE`, `XBOX_ACTIVE`, `INDIEGALA_PAGE_URL`, `CAPTCHA_PROVIDER`, `CAPTCHA_API_KEY`, `STEAM_POINTS_SHOP_WEEKLY`.
+
+### What did NOT ship
+
+- Real quiz-answer automation for MS Rewards (needs live account for reliable selectors).
+- Punch-card multi-step orchestration (same reason).
+- EG hCaptcha + FAB checkout captcha call-site integration (helper ships; call-site wiring deferred pending captured captcha shape).
+- Streak-protection heuristics (requires per-account daily-cap knowledge).
+
+Ships on the site-registry pattern; every new watcher is one entry in `src/sites.js` plus one file in `src/platforms/`. Same shape as fanatical/humble/lenovo — nothing new to learn for a maintainer touching one of these.
+
+---
+
+## What's new in 2.10.1
+
+**Fix: panel's local `stripGpTail` override was masking the shared multi-word fix — silent daily-notify loop on "Ignored" `(Steam) Key Giveaway` entries.**
+
+`src/util.js`'s `stripGpTail` was hardened for multi-word GamerPower title tails back in v2.8.75 (see [memory note](https://github.com/feldorn/free-games-claimer/blob/main/CHANGELOG.md#whats-new-in-2875)) — the regex became `\s*\([^)]+\)\s*(?:\w+\s+)*Giveaways?\b.*$` to cover `(Steam) Key Giveaway`, `(Epic Games) Beta Giveaway`, plural `Giveaways`, etc.
+
+But `interactive-login.js:8874` had shadowed that helper with a local single-word copy (`Giveaway\b`) that never got updated. Consequence: when a user hit **Ignore** in the Discoveries tab on a title like `Dwarven Realms (Steam) Key Giveaway`, the panel wrote the dedup key `steam::dwarven realms steam key giveaway` — cruft included. Every subsequent Steam run's `getDiscoveryUserMarkedKeys()` lookup used the shared (fixed) `stripGpTail`, produced `steam::dwarven realms`, missed the stored key, and re-fired the "action needed" notify.
+
+If your `steam_min_price` gate also happened to not exclude the item (because it wasn't set, or the item was above your threshold), the same notify shipped every single day forever. Caught locally on `Dwarven Realms (Steam) Key Giveaway` — one daily push for a full week.
+
+Fix: dropped the local override and imported the shared `stripGpTail` from `src/util.js`. Any pre-2.10.1 stale keys in `data/discoveries-state.json` need one-time cleanup — either re-click Ignore in the panel (which now writes the correct key), or `jq` the JSON to drop keys where the value ends in ` giveaway`/` giveaways`.
+
+Filed as another instance of the ["Sweep both code paths on locator fixes"](https://github.com/feldorn/free-games-claimer/blob/main/CHANGELOG.md) pattern — the panel and the runtime read/write the same on-disk data, so a helper that lives in both places must stay in sync. The right shape is to always import from `src/util.js`; a local shadow is a landmine.
+
+---
+
+## What's new in 2.10.0
+
+**Shared `gotoWithRetry` across all sites ([PR #138](https://github.com/feldorn/free-games-claimer/pull/138) by @mateusfn98) — organically covers @zhaoxp-xyz's [#137](https://github.com/feldorn/free-games-claimer/issues/137).**
+
+The Epic-only `gotoWithNavRetry` helper (shipped for #104 / #105 back in v2.8.57-58 and extended for #107's `Target crashed`) is now generalised into `src/browser.js` as `gotoWithRetry(page, url, policy)`. Every site's top-level navigations use it, each with its own policy object (`attempts`, `backoffMs`, `isRecoverable`, `gotoOpts`, `siteId`).
+
+- **Epic** — behaviour preserved exactly: 30s backoff × 2 attempts, `isRecoverableEpicPageError` predicate (still includes `Target crashed` + the ERR_* family).
+- **Microsoft** — 5s × 2 with the existing `isRecoverableMsNavError` predicate, wraps both `BING_REWARDS_URL` gotos in the login flow.
+- **FAB, GOG, Steam, Humble, Fanatical, Lenovo** — new defensive 5s × 2, retry-any policy where these sites previously had no retry at all.
+- **Prime** — 4×30s with no backoff, tuned for Amazon Luna's intermittent tarpitting behaviour (per-attempt timeout 30s instead of the default 60s so a stalled document fails fast and re-navigates).
+
+The Steam addition is what @zhaoxp-xyz's [#137](https://github.com/feldorn/free-games-claimer/issues/137) needed: a single `page.goto: net::ERR_EMPTY_RESPONSE at https://store.steampowered.com/` at run-start no longer takes down the whole Steam pass — the retry gives Steam a second chance and the run continues if the second one lands.
+
+Site versions bumped: epic-games 2.1→2.2, fab 0.1→0.2, fanatical 0.1→0.2, gog 2.2→2.3, humble-bundle 0.1→0.2, lenovo-gaming 0.1→0.2, microsoft 2.1→2.2, prime-gaming 2.0→2.1, steam 2.0→2.1.
+
+Net +55 lines across 11 files (a lot of that is the helper's docs + per-site policy objects; the actual copy-paste it replaces was more compact than #136's launchContext preamble was). Second consecutive PR from @mateusfn98 — thanks for the follow-through.
+
+---
+
 ## What's new in 2.9.4
 
 **MS Rewards: new-UI card-click failures now save a diagnostic bundle — @dabziuebu4egh2's [#135](https://github.com/feldorn/free-games-claimer/issues/135).**

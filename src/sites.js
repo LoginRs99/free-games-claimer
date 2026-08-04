@@ -1,6 +1,6 @@
 // Site registry — the single declarative source of truth for every service
 // the engine knows about. Phase 0 of the engine refactor (issue #11): this
-// file holds the data; engine code in interactive-login.js + app-config.js
+// file holds the data; engine code in src/panel/panel.js + app-config.js
 // is migrated commit-by-commit to derive its hand-edited tables from here.
 //
 // Each entry carries everything the engine needs about a service:
@@ -8,8 +8,11 @@
 //   id              stable identifier used in config keys + UI deep links
 //   name            human-readable label shown in cards and notifications
 //   subtitle        optional second-line note rendered under name (Settings)
-//   script          per-service runner ('foo.js') or null for sub-services
-//                   that share their parent's script (microsoft-mobile)
+//   script          per-service runner as a repo-root-relative path, so the
+//                   spawned `node <script>` resolves from the process cwd.
+//                   Always build it with platformScript('foo') rather than
+//                   writing the path by hand. null for sub-services that
+//                   share their parent's script (microsoft-mobile)
 //   loginUrl        page to navigate to for interactive login (null = no
 //                   login flow, e.g. ubisoft watch-only)
 //   browserDir      persistent profile dir; null if no browser is launched
@@ -49,8 +52,28 @@
 // SERVICE_ROWS, …) that read these fields. Until then the new fields are
 // metadata-only and safe to ignore.
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { devices } from 'patchright';
 import { cfg } from './config.js';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Resolves a runner through the '#platforms/*' alias in package.json, so the
+// directory is declared once and serves both `import` and the spawned
+// `node <script>`. Returns a repo-root-relative path on purpose: the value
+// lands in shell commands, run logs and the CLAIM_CMD docs, where an absolute
+// container path would be noise.
+//
+// Tolerant on input — 'gog', 'gog.js' and even 'gog.js.js' all give
+// 'src/platforms/gog.js', so a call site that spells out the extension can't
+// double it. import.meta.resolve validates the alias, not the target, so a
+// misspelled name still returns a path and surfaces when the runner spawns.
+function platformScript(name) {
+  const file = String(name).replace(/(?:\.js)+$/, '') + '.js';
+  const abs = fileURLToPath(import.meta.resolve(`#platforms/${file}`));
+  return path.relative(REPO_ROOT, abs).split(path.sep).join('/');
+}
 
 // Read the signed-in Microsoft Rewards user via the dashboard's own
 // dapi/me endpoint. page.request inherits the browser context's cookies, so a
@@ -90,12 +113,12 @@ export const SITES = [
   {
     id: 'prime-gaming',
     name: 'Prime Gaming',
-    version: '2.0',
+    version: '2.1',
     subtitle: null,
-    script: 'prime-gaming.js',
+    script: platformScript('prime-gaming'),
     claimOrder: 2,
     // Getter so PG_BASE_URL takes effect at access time. Reads on each
-    // cookie-import (interactive-login.js#deriveTargetHost) and each
+    // cookie-import (src/panel/panel.js#deriveTargetHost) and each
     // panel-opened browser-login — both happen long after module load,
     // so this resolves to the live cfg value without a restart.
     get loginUrl() { return `${cfg.pg_base_url}/claims`; },
@@ -110,6 +133,9 @@ export const SITES = [
     configFields: [
       { key: 'redeem',       env: 'PG_REDEEM',   type: 'boolean', default: false,
         label: 'Redeem keys on external stores' },
+      { key: 'steamAutoredeem', env: 'PG_STEAM_AUTOREDEEM', type: 'boolean', default: false,
+        label: 'Auto-redeem Steam keys on your Steam account',
+        hint: 'When Prime hands you a Steam key (a growing share of the Prime Gaming offers ship as Steam keys via Legacy Games etc.), queue it to data/pending-steam-keys.json and let the following steam.js run redeem it via Steam\'s /account/registerkey using your Steam session. Off by default — leave off if you prefer manual redeem via the Pushover link. Since Prime runs before Steam in the same daily loop, queued keys are redeemed same-day.' },
       { key: 'claimDlc',     env: 'PG_CLAIMDLC', type: 'boolean', default: false,
         label: 'Claim in-game DLC content',
         hint: 'Amazon removed the in-game content tab from Prime Gaming — this toggle is currently a no-op. The script skips cleanly when the tab is missing; will resume claiming if/when Amazon brings it back.' },
@@ -162,9 +188,9 @@ export const SITES = [
   {
     id: 'epic-games',
     name: 'Epic Games',
-    version: '2.1',
+    version: '2.2',
     subtitle: null,
-    script: 'epic-games.js',
+    script: platformScript('epic-games'),
     claimOrder: 3,
     loginUrl: 'https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true&redirectUrl=https://store.epicgames.com/en-US/free-games',
     // Sessions tab "open in new tab" target. loginUrl points to the login
@@ -210,15 +236,15 @@ export const SITES = [
   {
     id: 'fab',
     name: 'FAB',
-    version: '0.1',
+    version: '0.2',
     subtitle: 'Claims the monthly "Limited-Time Free" assets on fab.com (Epic\'s 3D content marketplace) using your existing Epic Games session. Opt-in. Scaffolded — fab.com\'s DOM/selectors may need iteration as Epic updates the store.',
-    script: 'fab.js',
+    script: platformScript('fab'),
     // Runs right after Epic so the shared browser profile already holds a
     // warm Epic session — FAB authenticates via Epic SSO, so no second
     // login is needed in the common case. 3.5 slots between epic-games (3)
     // and steam (4) in the claim chain ordering.
     claimOrder: 3.5,
-    // FAB sign-in redirects to Epic's OAuth. Point the interactive-login
+    // FAB sign-in redirects to Epic's OAuth. Point the panel's login
     // target at the free-assets page; an unauthenticated visit surfaces the
     // Sign In control, and an authenticated one lands where the user wants.
     loginUrl: 'https://www.fab.com/limited-time-free',
@@ -277,9 +303,9 @@ export const SITES = [
   {
     id: 'gog',
     name: 'GOG',
-    version: '2.2',
+    version: '2.3',
     subtitle: null,
-    script: 'gog.js',
+    script: platformScript('gog'),
     // Runs AFTER Prime Gaming (claimOrder 2) so Prime→GOG cross-store
     // keys discovered on a given run can be redeemed same-day rather
     // than waiting for the next scheduled gog.js. Before v2.8.80 GOG
@@ -390,9 +416,9 @@ export const SITES = [
   {
     id: 'steam',
     name: 'Steam',
-    version: '2.0',
+    version: '2.1',
     subtitle: null,
-    script: 'steam.js',
+    script: platformScript('steam'),
     claimOrder: 4,
     loginUrl: 'https://store.steampowered.com/login/',
     homeUrl: 'https://store.steampowered.com/',
@@ -446,7 +472,7 @@ export const SITES = [
     name: 'AliExpress',
     version: '2.3',
     subtitle: 'Deprecated by AliExpress — web coin collection is being phased out in favor of the mobile app. Works for some accounts on a degradation curve. See README → Bot detection.',
-    script: 'aliexpress.js',
+    script: platformScript('aliexpress'),
     claimOrder: 5,
     // AliExpress's coin collector only works on the mobile site; desktop just
     // says "install the app". Use a dedicated browser profile so its
@@ -515,9 +541,9 @@ export const SITES = [
   {
     id: 'microsoft',
     name: 'Microsoft Rewards',
-    version: '2.1',
+    version: '2.2',
     subtitle: 'Runs both desktop and mobile sessions in one script.',
-    script: 'microsoft.js',
+    script: platformScript('microsoft'),
     claimOrder: 9,
     loginUrl: 'https://rewards.bing.com',
     get browserDir() { return cfg.dir.browser; },
@@ -640,7 +666,7 @@ export const SITES = [
     name: 'Ubisoft Connect',
     version: '2.0',
     subtitle: 'Watch-only: pings you when a new free game appears at store.ubisoft.com/us/free-games. No login, no auto-claim — go grab it manually.',
-    script: 'ubisoft.js',
+    script: platformScript('ubisoft'),
     claimOrder: 6,
     loginUrl: null,
     homeUrl: 'https://store.ubisoft.com/us/free-games',
@@ -658,9 +684,9 @@ export const SITES = [
   {
     id: 'humble-bundle',
     name: 'Humble Bundle',
-    version: '0.1',
+    version: '0.2',
     subtitle: 'Watch-only: pings you when new free items appear at humblebundle.com store. No login, no auto-claim — go grab manually. Scaffolded scratch — selectors and URL paths may need iteration as Humble updates their store layout.',
-    script: 'humble-bundle.js',
+    script: platformScript('humble-bundle'),
     claimOrder: 7,
     loginUrl: null,
     homeUrl: 'https://www.humblebundle.com/store/search?sort=discount&filter=onsale&min=0&max=0',
@@ -678,9 +704,9 @@ export const SITES = [
   {
     id: 'fanatical',
     name: 'Fanatical',
-    version: '0.1',
+    version: '0.2',
     subtitle: 'Watch-only: pings you when new free Steam keys appear at fanatical.com/en/free-games-keys. No login, no auto-claim — go grab manually. Scaffolded — Fanatical\'s API endpoint and product shape may need iteration over time.',
-    script: 'fanatical.js',
+    script: platformScript('fanatical'),
     claimOrder: 8,
     loginUrl: null,
     // Fanatical removed the dedicated /en/free-games-keys landing page from
@@ -701,11 +727,71 @@ export const SITES = [
     checkLogin: null,
   },
   {
+    id: 'psn-watcher',
+    name: 'PSN (PlayStation Plus)',
+    version: '0.1',
+    subtitle: 'Watch-only: pings you when new PlayStation Plus / free-on-PSN titles land, sourced from GamerPower\'s aggregator. Notify only — Sony\'s anti-bot fingerprinting on the PSN store makes auto-claim infeasible (see closed PR #55), so this gives you the "action needed" signal to claim on your console.',
+    script: platformScript('psn-watcher'),
+    claimOrder: 8.3,
+    loginUrl: null,
+    homeUrl: 'https://store.playstation.com/en-us/pages/deals',
+    browserDir: null,
+    contextOptions: null,
+    defaultActive: false,
+    activeEnv: 'PSN_ACTIVE',
+    linkedWith: null,
+    claimDbFile: null,
+    scheduleKind: 'watch-only',
+    features: [],
+    configFields: [],
+    checkLogin: null,
+  },
+  {
+    id: 'xbox-watcher',
+    name: 'Xbox / Game Pass',
+    version: '0.1',
+    subtitle: 'Watch-only: pings you when new free-on-Xbox / Free Play Days / Game Pass promos land, sourced from GamerPower\'s aggregator. Notify only — Xbox Live SSO doesn\'t script reliably, so this gives you the ping to grab on your console.',
+    script: platformScript('xbox-watcher'),
+    claimOrder: 8.4,
+    loginUrl: null,
+    homeUrl: 'https://www.xbox.com/en-US/live/free-play-days',
+    browserDir: null,
+    contextOptions: null,
+    defaultActive: false,
+    activeEnv: 'XBOX_ACTIVE',
+    linkedWith: null,
+    claimDbFile: null,
+    scheduleKind: 'watch-only',
+    features: [],
+    configFields: [],
+    checkLogin: null,
+  },
+  {
+    id: 'indiegala',
+    name: 'IndieGala',
+    version: '0.1',
+    subtitle: 'Watch-only: pings you when new free games appear at freebies.indiegala.com. No login, no auto-claim — go grab manually. IndieGala runs 3-5 rotating giveaways at a time and cycles them fast, so this closes the "I missed it on the storefront" gap the GamerPower feed alone cannot cover.',
+    script: platformScript('indiegala'),
+    claimOrder: 8.5,
+    loginUrl: null,
+    homeUrl: 'https://freebies.indiegala.com/',
+    browserDir: null,
+    contextOptions: null,
+    defaultActive: false,
+    activeEnv: 'INDIEGALA_ACTIVE',
+    linkedWith: null,
+    claimDbFile: null,
+    scheduleKind: 'watch-only',
+    features: [],
+    configFields: [],
+    checkLogin: null,
+  },
+  {
     id: 'lenovo-gaming',
     name: 'Lenovo Gaming Key Drops',
-    version: '0.1',
+    version: '0.2',
     subtitle: 'Watch-only: tracks scheduled key-drops at gaming.lenovo.com/game-key-drops. Notifies on discovery + 1h before / 5min before / at drop time. Drops are first-come-first-served once they go live, so the script is paired with a per-drop wake scheduler that fires push notifications on time. Auto-claim is a future phase — keys are first-come-first-served and the redemption flow goes through GamesPlanet.',
-    script: 'lenovo-gaming.js',
+    script: platformScript('lenovo-gaming'),
     claimOrder: 10,
     loginUrl: null,
     homeUrl: 'https://gaming.lenovo.com/game-key-drops',
@@ -923,6 +1009,40 @@ export function getClaimScriptOrder() {
     .map(s => s.linkedWith
       ? { id: s.id, script: s.script, linkedWith: s.linkedWith }
       : { id: s.id, script: s.script });
+}
+
+// Runner basenames the registry knows: 'gog', 'epic-games', … Entries with
+// script: null (microsoft-mobile) are skipped.
+const RUNNER_NAMES = new Set(
+  SITES.filter(s => s.script).map(s => path.basename(s.script, '.js')),
+);
+
+// Rewrites the command word of one segment, preserving inline env and args:
+//   'node gog.js'  → 'node src/platforms/gog.js'
+//   'steam'        → 'node src/platforms/steam.js'
+//   'echo gog'     → unchanged; the command word is 'echo', not 'gog'
+function normalizeClaimSegment(seg) {
+  const m = /^(\s*(?:\w+=\S*\s+)*)(?:node\s+)?(\S+)([\s\S]*)$/.exec(seg);
+  if (!m) return seg;
+  const [, lead, word, rest] = m;
+  const name = word.replace(/\.js$/, '').replace(/^.*\//, '');
+  // Rewritten: a known runner in any spelling ('gog', 'gog.js', './gog.js',
+  // 'src/platforms/gog.js'), or a bare '<file>.js' — nothing executable sits at
+  // the repo root anymore, so the name can only mean a scraper.
+  // Left alone: 'echo', './x.sh', '/opt/mine/pre.js', 'gogg' (typo, no .js).
+  if (!RUNNER_NAMES.has(name) && !/^[^/]+\.js$/.test(word)) return seg;
+  return `${lead}node ${platformScript(name)}${rest}`;
+}
+
+// CLAIM_CMD / CLAIM_CMD_MANUAL name scrapers by path, so an override written for
+// an older layout breaks on the next move. Resolve each command through the
+// registry instead: 'gog.js; steam.js' runs as
+// 'node src/platforms/gog.js; node src/platforms/steam.js'. A step that isn't a
+// runner ('./x.sh', 'echo done') comes back byte-identical.
+export function normalizeClaimCommand(cmd) {
+  if (typeof cmd !== 'string') return cmd;
+  // Separators are never part of a match, so they survive untouched.
+  return cmd.replace(/[^;&|\n]+/g, seg => normalizeClaimSegment(seg));
 }
 
 // Settings-tab "Active" toggle linking. Each parent entry's linkedWith

@@ -1,8 +1,9 @@
-import { launchContext } from './src/browser.js';
+import { launchContext, gotoWithRetry } from '#src/browser.js';
 import { authenticator } from 'otplib';
-import { resolve, jsonDb, datetime, filenamify, prompt, confirm, notify, html_game_list, log } from './src/util.js';
-import { cfg } from './src/config.js';
-import { siteVersion } from './src/sites.js';
+import { resolve, jsonDb, datetime, filenamify, prompt, confirm, notify, html_game_list, log } from '#src/util.js';
+import { cfg } from '#src/config.js';
+import { siteVersion } from '#src/sites.js';
+import { enqueueSteamKey } from '#src/pending-steam-keys.js';
 
 const screenshot = (...a) => resolve(cfg.dir.screenshots, 'prime-gaming', ...a);
 
@@ -44,12 +45,22 @@ if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
 await page.setViewportSize({ width: cfg.width, height: cfg.height }); // TODO workaround for https://github.com/vogler/free-games-claimer/issues/277 until Playwright fixes it
 // console.debug('userAgent:', await page.evaluate(() => navigator.userAgent));
 
+// Amazon tarpits Luna navigations intermittently, holding the document past
+// 60s while an immediate re-navigation loads in ~1.5s. Fail fast per attempt
+// and retry without backoff rather than sit out the stall. (#134)
+const PRIME_NAV = {
+  attempts: 4,
+  gotoOpts: { waitUntil: 'domcontentloaded', timeout: 30000 }, // default 'load' takes forever
+  siteId: 'prime-gaming',
+  label: 'Luna', // Amazon's name for the host; the registry only knows "Prime Gaming"
+};
+
 const notify_games = [];
 const notify_pending = []; // separate list — sent in chunks to avoid Pushover body truncation
 let user;
 
 try {
-  await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' }); // default 'load' takes forever
+  await gotoWithRetry(page, URL_CLAIM, PRIME_NAV);
   // need to wait for some elements to exist before checking if signed in or accepting cookies:
   await Promise.any(['button:has-text("Sign in")', '[data-a-target="user-dropdown-first-name-text"]'].map(s => page.waitForSelector(s)));
   page.click('[aria-label="Cookies usage disclaimer banner"] button:has-text("Accept Cookies")').catch(_ => { }); // to not waste screen space when non-headless, TODO does not work reliably, need to wait for something else first?
@@ -307,7 +318,52 @@ try {
         'microsoft store': 'https://account.microsoft.com/billing/redeem',
         xbox: 'https://account.microsoft.com/billing/redeem',
         'legacy games': 'https://www.legacygames.com/primedeal',
+        // Steam intentionally NOT here — inline redeem would need the
+        // Steam session, which prime-gaming's browser context doesn't
+        // carry. Steam keys go through the queue handoff in the special
+        // branch below so steam.js can drain them via its own session.
+        steam: 'https://store.steampowered.com/account/registerkey',
       };
+      // Steam handoff branch (v2.11.0 / 2A). We still extract the code
+      // here — same selectors as the inline-redeem branch below — but
+      // instead of trying to redeem via prime-gaming's browser (no
+      // Steam session), we queue the code to data/pending-steam-keys.json
+      // for steam.js to drain later in the same daily loop (Prime
+      // claimOrder 2 → Steam claimOrder 4). When PG_STEAM_AUTOREDEEM
+      // is off, the notification stays the manual-redeem link as before.
+      if (store === 'steam' || store === 'steampowered.com') {
+        let code = null;
+        try {
+          code = await Promise.any([
+            page.inputValue('input[type="text"]'),
+            page.textContent('[data-a-target="ClaimStateClaimCodeContent"]').then(s => s.replace(/^Your code:\s*/i, '').trim()),
+          ]);
+        } catch { /* code selectors missed — fall through to the standard 'not implemented' path */ }
+        if (code) {
+          db.data[user][title].code = code;
+          const redeem_url = 'https://store.steampowered.com/account/registerkey?key=' + encodeURIComponent(code);
+          if (cfg.pg_steam_autoredeem) {
+            const enqueued = enqueueSteamKey({ title, code });
+            const status = enqueued ? 'queued for steam.js auto-redeem' : 'already in queue';
+            log.ok(`${title} — ${status}`);
+            db.data[user][title].status = 'claimed, queued for Steam';
+            claimedCount++;
+            notify_game.status = `${status} — steam.js will redeem next`;
+            notify_game.url = redeem_url;
+            notify_game.details = `${redeem_url} (code: ${code})`;
+          } else {
+            log.ok(`${title} — claimed on Steam (manual redeem — set PG_STEAM_AUTOREDEEM=1 for auto)`);
+            db.data[user][title].status = 'claimed';
+            needsActionCount++;
+            notify_game.status = 'redeem on Steam';
+            notify_game.url = redeem_url;
+            notify_game.details = `${redeem_url} (code: ${code})`;
+          }
+          await page.screenshot({ path: screenshot('external', `${filenamify(title)}.png`), fullPage: true });
+          continue; // don't fall into the generic redeem branch below
+        }
+        // fall through if code extraction failed → generic 'not implemented' path
+      }
       if (store in redeem) {
         const code = await Promise.any([page.inputValue('input[type="text"]'), page.textContent('[data-a-target="ClaimStateClaimCodeContent"]').then(s => s.replace('Your code: ', ''))]); // input: Legacy Games; text: gog.com
         if (store == 'legacy games') { // may be different URL like https://legacygames.com/primeday/puzzleoftheyear/
@@ -468,7 +524,7 @@ try {
       await page.screenshot({ path: screenshot('external', `${filenamify(title)}.png`), fullPage: true });
     }
   }
-  await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, URL_CLAIM, PRIME_NAV);
   await page.click('button[data-type="Game"]');
 
   if (notify_games.length) { // make screenshot of all games if something was claimed
@@ -557,7 +613,7 @@ try {
         if (cfg.debug) console.error(error);
         failedCount++;
       } finally {
-        await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' });
+        await gotoWithRetry(page, URL_CLAIM, PRIME_NAV);
         await page.click('button[data-type="InGameLoot"]');
       }
     }

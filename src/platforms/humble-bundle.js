@@ -1,8 +1,8 @@
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { datetime, notify, log, dataDir, handleSIGINT } from './src/util.js';
-import { launchContext } from './src/browser.js';
-import { cfg } from './src/config.js';
-import { siteVersion } from './src/sites.js';
+import { datetime, notify, log, dataDir, handleSIGINT } from '#src/util.js';
+import { launchContext, gotoWithRetry } from '#src/browser.js';
+import { cfg } from '#src/config.js';
+import { siteVersion } from '#src/sites.js';
 
 // Watch-only Humble Bundle free-items tracker. No login, no auto-claim —
 // loads humblebundle.com/store/search?priceMax=0 in a real browser
@@ -42,6 +42,9 @@ process.on('exit', code => {
 // /store/promo/<slug>) once one is identified would make this
 // runner sharper.
 const URL_PAGE = cfg.humble_page_url || 'https://www.humblebundle.com/store/search?sort=newest'; // HUMBLE_PAGE_URL override
+
+// Retry policy shared by this site's top-level navigations.
+const HUMBLE_NAV = { attempts: 2, backoffMs: 5000, gotoOpts: { waitUntil: 'domcontentloaded', timeout: 30000 }, siteId: 'humble-bundle' };
 const STATE_FILE = dataDir('humble-bundle-watch.json');
 
 function loadState() {
@@ -87,7 +90,7 @@ try {
     } catch { /* swallow per-response parse errors */ }
   });
 
-  await page.goto(URL_PAGE, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await gotoWithRetry(page, URL_PAGE, HUMBLE_NAV);
   // Give the SPA a moment to fire its product fetch and Cloudflare to
   // settle. We don't wait on a specific selector because Humble's
   // tile classnames are React-hashed and shift between deploys; the

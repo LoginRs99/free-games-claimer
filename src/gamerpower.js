@@ -35,6 +35,8 @@ export const COLLECTOR_PATTERNS = {
   'ubisoft':      /ubisoft connect|\buplay\b/i,
   'mobile':       /\bandroid\b|\bios\b/i,
   'console':      /\bps[2-5]\b|\bxbox\b|\bswitch\b|\bnintendo\b/i,
+  'psn':          /\bps[3-5]\b|playstation/i,
+  'xbox':         /\bxbox\b/i,
   'vr':           /\b(vr|oculus|rift|steamvr|quest)\b/i,
 };
 
@@ -87,6 +89,8 @@ export const COLLECTOR_DOMAINS = {
   'stove':             ['onstove.com'],
   'prime-gaming':      ['gaming.amazon.com', 'amazon.com'],
   'ubisoft':           ['store.ubisoft.com', 'ubisoftconnect.com'],
+  'psn':               ['store.playstation.com', 'playstation.com'],
+  'xbox':              ['xbox.com', 'microsoft.com'],
 };
 
 export async function fetchGamerPowerGiveaways() {

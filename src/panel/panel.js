@@ -1,17 +1,15 @@
 import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
 import { watch, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-const __panelDirname = path.dirname(fileURLToPath(import.meta.url));
-import { datetime, notify, jsonDb, normalizeTitle, cleanProfileLocks, readDigestBuffer, markDigestFlushed } from './src/util.js';
-import { launchContext } from './src/browser.js';
-import { cfg } from './src/config.js';
-import { describeConfig, patchConfig, describeEnv, getSchedulerConfig, CONFIG_FILE_PATH } from './src/app-config.js';
-import { SITES as SITE_REGISTRY, getLoginSitesById, getClaimScriptOrder, getLinkedActiveMap, getClaimDbFiles, getServiceRows } from './src/sites.js';
-import { fetchGamerPowerGiveaways, filterFor as filterGpFor, COLLECTOR_PATTERNS as GP_COLLECTOR_PATTERNS, GP_TITLE_HINTS } from './src/gamerpower.js';
-import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfCleanTitle, COLLECTOR_TITLE_PATTERNS as FGF_COLLECTOR_PATTERNS } from './src/freegamefindings.js';
-import { pollGithubReplies, getWatchState as getGithubWatchState, markIssueRead as markGithubIssueRead } from './src/github-watch.js';
+import { datetime, notify, jsonDb, normalizeTitle, cleanProfileLocks, readDigestBuffer, markDigestFlushed, stripGpTail, dataDir, rootDir } from '#src/util.js';
+import { launchContext } from '#src/browser.js';
+import { cfg } from '#src/config.js';
+import { describeConfig, patchConfig, describeEnv, getSchedulerConfig, CONFIG_FILE_PATH } from '#src/app-config.js';
+import { SITES as SITE_REGISTRY, getLoginSitesById, getClaimScriptOrder, getLinkedActiveMap, getClaimDbFiles, getServiceRows, normalizeClaimCommand } from '#src/sites.js';
+import { fetchGamerPowerGiveaways, filterFor as filterGpFor, COLLECTOR_PATTERNS as GP_COLLECTOR_PATTERNS, GP_TITLE_HINTS } from '#src/gamerpower.js';
+import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfCleanTitle, COLLECTOR_TITLE_PATTERNS as FGF_COLLECTOR_PATTERNS } from '#src/freegamefindings.js';
+import { pollGithubReplies, getWatchState as getGithubWatchState, markIssueRead as markGithubIssueRead } from '#src/github-watch.js';
 
 const PANEL_PORT = Number(process.env.PANEL_PORT) || 7080;
 const NOVNC_PORT = process.env.NOVNC_PORT || 6080;
@@ -26,7 +24,7 @@ const PANEL_PASSWORD = process.env.PANEL_PASSWORD || process.env.VNC_PASSWORD ||
 const BASE_PATH = cfg.base_path; // e.g. "/free-games" when behind a subfolder proxy, or ""
 const PUBLIC_URL = cfg.public_url || `http://localhost:${PANEL_PORT}${BASE_PATH}`;
 const APP_VERSION = (() => {
-  try { return JSON.parse(readFileSync(path.join(__panelDirname, 'package.json'), 'utf8')).version || ''; }
+  try { return JSON.parse(readFileSync(rootDir('package.json'), 'utf8')).version || ''; }
   catch { return ''; }
 })();
 
@@ -355,6 +353,34 @@ let runHistoryDb = null;
 // scheduler honors "24h from last completion" across restarts —
 // firing immediately when past-due, sleeping the remainder when not.
 let schedulerStateDb = null;
+
+// Pause/resume helpers (v2.11.0 — long-promised in docs/PANEL.md:126).
+// Persisted on `scheduler-state.json` under `paused` + `pausedAt` so the
+// setting survives panel restart. `fireScheduledRun` checks the flag on
+// every wake and skips-and-logs when paused; missed scheduled fires do
+// NOT retro-run on resume (per feedback_missed_runs_manual_recovery —
+// user manually triggers via the per-service Run buttons for whatever
+// they want to catch up on). Panel UI shows a toggle in the Sessions
+// tab; scheduler status line reads "paused" instead of a next-wake time.
+function isSchedulerPaused() {
+  return !!(schedulerStateDb && schedulerStateDb.data && schedulerStateDb.data.paused);
+}
+function schedulerPausedAt() {
+  return schedulerStateDb && schedulerStateDb.data && schedulerStateDb.data.pausedAt || null;
+}
+async function setSchedulerPaused(paused, note) {
+  if (!schedulerStateDb) return;
+  schedulerStateDb.data.paused = !!paused;
+  schedulerStateDb.data.pausedAt = paused ? new Date().toISOString() : null;
+  try { await schedulerStateDb.write(); }
+  catch (e) { console.error(`[${datetime()}] failed to persist scheduler pause state: ${e.message}`); }
+  console.log(`[${datetime()}] Scheduler ${paused ? 'paused' : 'resumed'}${note ? ' — ' + note : ''}`);
+  // Kick the wakeup barrier so both scheduler loops re-evaluate at once —
+  // otherwise a pause during a long sleep waits out the sleep before
+  // taking effect, and a resume waits out the pause-fallthrough sleep
+  // before restoring cadence.
+  fireSchedulerWakeups();
+}
 
 // Persisted user-state for the Discoveries tab — per-item "ignored" or
 // "manually-claimed" markers the user applies via row actions. Keyed by
@@ -890,7 +916,13 @@ function buildClaimCommand({ manual = false, sites = null } = {}) {
 function resolveClaimCommand({ manual, sites = null }) {
   if (!sites) {
     const envKey = manual ? 'CLAIM_CMD_MANUAL' : 'CLAIM_CMD';
-    if (process.env[envKey]) return process.env[envKey];
+    const raw = process.env[envKey];
+    if (raw) {
+      const cmd = normalizeClaimCommand(raw);
+      // Running something other than what the user wrote should be visible.
+      if (cmd !== raw) console.log(`[${datetime()}] ${envKey}: resolved runner paths — running \`${cmd}\``);
+      return cmd;
+    }
   }
   return buildClaimCommand({ manual, sites });
 }
@@ -1767,7 +1799,8 @@ function runAllScripts({ source = 'panel', sites = null, extraEnv = null } = {})
       // per-card test), mark today's MS schedule fired so the decoupled MS
       // loop won't re-fire later the same day. Without this, a manual
       // 09:00 click + scheduled 10:48 fire would double-run MS.
-      if (code === 0 && /\bnode microsoft\.js\b/.test(cmd)) {
+      // Basename, not `node <path>`: the registry owns the path, and it moves.
+      if (code === 0 && /\bmicrosoft\.js\b/.test(cmd)) {
         try { markMsRunFiredToday(); } catch {}
       }
       // Persist the scheduler-main completion timestamp so a panel
@@ -1838,8 +1871,8 @@ let nextAwaRun = null;        // Date | null — Alienware Arena wake
 let msTodayState = null;      // last-read MS schedule state, for getState()
 let awaTodayState = null;     // last-read AWA schedule state, for getState()
 
-const MS_SCHEDULE_FILE = path.resolve(__panelDirname, 'data', 'ms-schedule-today.json');
-const AWA_SCHEDULE_FILE = path.resolve(__panelDirname, 'data', 'awa-schedule-today.json');
+const MS_SCHEDULE_FILE = dataDir('ms-schedule-today.json');
+const AWA_SCHEDULE_FILE = dataDir('awa-schedule-today.json');
 
 function todayKey(d = new Date()) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -1918,7 +1951,7 @@ function pickAwaTargetFor(dateKey, c) {
 // emit their `[RUN-SUCCESS] service=<id>` marker (parsed in the stdout
 // handler), persisted to data/last-runs.json so the Sessions tab can show
 // "Last Successful Run …" on each card across panel restarts.
-const LAST_RUNS_FILE = path.resolve(__panelDirname, 'data', 'last-runs.json');
+const LAST_RUNS_FILE = dataDir('last-runs.json');
 let lastRunSuccess = {};
 function loadLastRuns() {
   try {
@@ -2322,6 +2355,12 @@ function withScheduleLock(fn) {
 }
 
 async function fireScheduledRun({ label, sites, extraEnv, postRun }) {
+  // Pause guard (v2.11.0). Skip-and-log; missed runs do NOT retro-fire
+  // on resume — user manually triggers via per-service Run buttons.
+  if (isSchedulerPaused()) {
+    console.log(`[${datetime()}] Scheduler (${label}): paused — skipping this wake. Resume from the Sessions tab to restart cadence.`);
+    return false;
+  }
   // Preempt a forgotten/stale interactive Login session before checking
   // for a busy lock. Without this, a Login session left open for hours
   // (e.g. user clicked Login on Epic, then walked away) would block
@@ -2602,7 +2641,7 @@ async function awaSchedulerLoop() {
 // notification and stamps the per-drop notifications.* field so the same wake
 // doesn't re-fire on next loop iteration.
 
-const LENOVO_STATE_FILE = path.resolve(__panelDirname, 'data', 'lenovo-gaming-watch.json');
+const LENOVO_STATE_FILE = dataDir('lenovo-gaming-watch.json');
 let nextLenovoWake = null; // { dropId, kind, target } | null
 
 function readLenovoState() {
@@ -3018,6 +3057,8 @@ async function getState() {
     sgScheduled,
     awaScheduled,
     loopEnabled: schedEnabled,
+    schedulerPaused: isSchedulerPaused(),
+    schedulerPausedAt: schedulerPausedAt(),
     loopSeconds: sched.loop,
     dailyStartTime: sched.dailyStartTime,
     dailyStartDays: sched.dailyStartDays,
@@ -6910,6 +6951,27 @@ function renderScheduleTab() {
   const parts = [];
   const fmtH = h => String(h).padStart(2, '0') + ':00';
 
+  // Pause/resume toggle (v2.11.0). Sits at the very top so the pause
+  // state can't hide behind a scroll on smaller viewports. Persisted
+  // across panel restarts. Unpausing does NOT retro-fire missed
+  // scheduled runs — user manually triggers via per-service Run.
+  if (state.schedulerPaused) {
+    parts.push(
+      '<div class="sched-row" style="background:#3a2a1a;border-left:3px solid #f0a020;padding:8px 12px;margin-bottom:8px">' +
+      '<div class="sched-label">Scheduler</div>' +
+      '<div><span class="sched-value" style="color:#f0a020;font-weight:600">Paused</span>' +
+      (state.schedulerPausedAt ? '<span class="sched-count muted"> since ' + formatTimestamp(state.schedulerPausedAt, 'relative') + '</span>' : '') +
+      ' <button type="button" class="btn small" onclick="resumeScheduler()" style="margin-left:12px">Resume</button>' +
+      '<div class="muted" style="margin-top:4px;font-size:0.85em">Scheduled wakes are being skipped. Missed runs do NOT retro-fire on resume — use the per-service Run buttons on the Sessions tab to catch up on anything specific.</div>' +
+      '</div></div>'
+    );
+  } else {
+    parts.push(
+      '<div class="sched-row"><div class="sched-label">Scheduler</div>' +
+      '<div><span class="sched-value">Active</span> <button type="button" class="btn small" onclick="pauseScheduler()" style="margin-left:12px">Pause</button></div></div>'
+    );
+  }
+
   if (state.legacyCombinedMode) {
     // Legacy: single combined chain anchored 30m before MS window.
     if (state.nextScheduledRun) {
@@ -7418,6 +7480,27 @@ async function api(method, path, body) {
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(BASE_PATH + '/api' + path, opts);
   return res.json();
+}
+
+// Scheduler pause/resume (v2.11.0). Optimistic UI — flip the toast and
+// let refreshState catch up.
+async function pauseScheduler() {
+  try {
+    await api('POST', '/scheduler/pause');
+    showToast('Scheduler paused — scheduled wakes will be skipped', 'info');
+    await refreshState();
+  } catch (e) {
+    showToast('Pause failed: ' + (e && e.message || 'unknown'), 'error');
+  }
+}
+async function resumeScheduler() {
+  try {
+    await api('POST', '/scheduler/resume');
+    showToast('Scheduler resumed', 'info');
+    await refreshState();
+  } catch (e) {
+    showToast('Resume failed: ' + (e && e.message || 'unknown'), 'error');
+  }
 }
 
 function showToast(message, type = 'info', duration = 4000) {
@@ -8933,6 +9016,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && req.url === '/api/scheduler/pause') {
+      await setSchedulerPaused(true, 'paused via panel');
+      sendJson(res, { success: true, paused: true, pausedAt: schedulerPausedAt() });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/scheduler/resume') {
+      await setSchedulerPaused(false, 'resumed via panel');
+      sendJson(res, { success: true, paused: false });
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/api/launch') {
       const { site } = await parseBody(req);
       if (!site || !SITES[site]) {
@@ -9366,10 +9461,11 @@ const server = http.createServer(async (req, res) => {
         };
       };
 
-      // For GamerPower titles like "Devil's Island (Epic Games) Giveaway",
-      // strip the trailing platform tag + "Giveaway" so title-match against
-      // store DBs works. FGF cleaned titles already drop the bracket prefix.
-      const stripGpTail = t => String(t || '').replace(/\s*\([^)]+\)\s*Giveaway\b.*$/i, '').trim();
+      // stripGpTail is imported from src/util.js — the shared helper handles
+      // multi-word variants "(Steam) Key Giveaway", "(Epic Games) Beta Giveaway",
+      // and the pluralised "Giveaways" that this local copy used to miss,
+      // causing panel-written dedup keys to diverge from what the claim scripts
+      // read (silent notify-loop on ignored Steam Key Giveaway entries).
 
       // Cross-source price index. GamerPower entries carry a `worth`
       // field but FGF posts don't — Reddit doesn't aggregate price
@@ -10086,7 +10182,7 @@ const server = http.createServer(async (req, res) => {
         if (rel && !rel.includes('..') && !rel.includes('/')) assetPath = rel;
       }
       if (assetPath) {
-        const full = path.join(__panelDirname, 'assets', assetPath);
+        const full = path.join(rootDir('assets'), assetPath);
         if (existsSync(full)) {
           const ext = path.extname(assetPath).toLowerCase();
           const ct = { '.png': 'image/png', '.ico': 'image/x-icon', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg' }[ext] || 'application/octet-stream';

@@ -10,7 +10,7 @@
 //   - restock detected (title contains "(Restocked!)")
 //
 // Pre-drop "1 hour before" / "5 minutes before" notifications come from
-// the engine-side lenovoSchedulerLoop in interactive-login.js, which reads
+// the engine-side lenovoSchedulerLoop in src/panel/panel.js, which reads
 // this same JSON file and wakes at the dynamic per-drop times. The watcher
 // just keeps the file fresh.
 //
@@ -23,11 +23,11 @@
 // canonically. Listing-fetch is one HTTP round trip; detail fetches only
 // run for drops that are new or whose schedule we don't have cached.
 
-import { launchContext } from './src/browser.js';
+import { launchContext, gotoWithRetry } from '#src/browser.js';
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { datetime, notify, log, dataDir, handleSIGINT } from './src/util.js';
-import { cfg } from './src/config.js';
-import { siteVersion } from './src/sites.js';
+import { datetime, notify, log, dataDir, handleSIGINT } from '#src/util.js';
+import { cfg } from '#src/config.js';
+import { siteVersion } from '#src/sites.js';
 
 handleSIGINT();
 log.section(`Lenovo Gaming (v${siteVersion('lenovo-gaming')})`);
@@ -38,6 +38,9 @@ process.on('exit', code => {
 });
 
 const URL_LISTING = cfg.lenovo_page_url || 'https://gaming.lenovo.com/game-key-drops'; // LENOVO_PAGE_URL override
+
+// Retry policy shared by this site's top-level navigations.
+const LENOVO_NAV = { attempts: 2, backoffMs: 5000, siteId: 'lenovo-gaming' };
 const STATE_FILE = dataDir('lenovo-gaming-watch.json');
 
 function loadState() {
@@ -102,7 +105,7 @@ try {
   context.setDefaultTimeout(cfg.debug ? 0 : cfg.timeout);
 
   log.status('Fetching', URL_LISTING);
-  await page.goto(URL_LISTING, { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, URL_LISTING, LENOVO_NAV);
   // Bettermode is JS-driven; the drop cards mount after first paint.
   await page.waitForTimeout(8000);
 

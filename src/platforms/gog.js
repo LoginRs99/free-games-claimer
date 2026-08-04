@@ -1,11 +1,11 @@
-import { launchContext } from './src/browser.js';
+import { launchContext, gotoWithRetry } from '#src/browser.js';
 import { existsSync, readFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { resolve, jsonDb, datetime, filenamify, prompt, confirm, notify, html_game_list, log, normalizeTitle, awaitUserCaptchaSolve, matchKey, stripGpTail, getDiscoveryUserMarkedKeys, delay, dataDir } from './src/util.js';
-import { cfg } from './src/config.js';
-import { siteVersion } from './src/sites.js';
-import { fetchGamerPowerGiveaways, filterFor as filterGpFor, resolveGamerPowerHref } from './src/gamerpower.js';
-import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfClean } from './src/freegamefindings.js';
+import { resolve, jsonDb, datetime, filenamify, prompt, confirm, notify, html_game_list, log, normalizeTitle, awaitUserCaptchaSolve, matchKey, stripGpTail, getDiscoveryUserMarkedKeys, delay, dataDir } from '#src/util.js';
+import { cfg } from '#src/config.js';
+import { siteVersion } from '#src/sites.js';
+import { fetchGamerPowerGiveaways, filterFor as filterGpFor, resolveGamerPowerHref } from '#src/gamerpower.js';
+import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfClean } from '#src/freegamefindings.js';
 
 // GOG 2FA backup-code consumption. Codes are configured comma-separated
 // via GOG_OTP_BACKUP_CODES; used codes are appended to
@@ -43,6 +43,9 @@ const screenshot = (...a) => resolve(cfg.dir.screenshots, 'gog', ...a);
 
 const URL_CLAIM = cfg.gog_page_url || 'https://www.gog.com/en'; // GOG_PAGE_URL override
 
+// Retry policy shared by this site's top-level navigations.
+const GOG_NAV = { attempts: 2, backoffMs: 5000, siteId: 'gog' };
+
 log.section(`GOG (v${siteVersion('gog')})`);
 
 const db = await jsonDb('gog.json', {});
@@ -71,7 +74,7 @@ let catalogNew = null;
 try {
   await context.addCookies([{ name: 'CookieConsent', value: '{stamp:%274oR8MJL+bxVlG6g+kl2we5+suMJ+Tv7I4C5d4k+YY4vrnhCD+P23RQ==%27%2Cnecessary:true%2Cpreferences:true%2Cstatistics:true%2Cmarketing:true%2Cmethod:%27explicit%27%2Cver:1%2Cutc:1672331618201%2Cregion:%27de%27}', domain: 'www.gog.com', path: '/' }]); // to not waste screen space when non-headless
 
-  await page.goto(URL_CLAIM, { waitUntil: 'domcontentloaded' }); // default 'load' takes forever
+  await gotoWithRetry(page, URL_CLAIM, GOG_NAV); // domcontentloaded; default 'load' takes forever
 
   // page.click('#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll').catch(_ => { }); // does not work reliably, solved by setting CookieConsent above
   const signIn = page.locator('a:has-text("Sign in"), [hook-test="menuAnonymousButton"]').first();

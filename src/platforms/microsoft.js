@@ -1,14 +1,18 @@
 import { devices } from 'patchright';
-import { launchContext } from './src/browser.js';
+import { launchContext, gotoWithRetry } from '#src/browser.js';
 import { authenticator } from 'otplib';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { delay, datetime, prompt, notify, log, dataDir, jsonDb } from './src/util.js';
-import { cfg } from './src/config.js';
-import { describeConfig } from './src/app-config.js';
-import { siteVersion } from './src/sites.js';
+import { delay, datetime, prompt, notify, log, dataDir, jsonDb } from '#src/util.js';
+import { cfg } from '#src/config.js';
+import { describeConfig } from '#src/app-config.js';
+import { siteVersion } from '#src/sites.js';
 
 const BING_REWARDS_URL = 'https://rewards.bing.com';
 const BING_URL = 'https://www.bing.com';
+
+// Retry policy shared by this site's top-level navigations. isRecoverableMsNavError
+// is a hoisted function declaration, so referencing it here is fine.
+const MS_NAV = { attempts: 2, backoffMs: 5000, isRecoverable: isRecoverableMsNavError, siteId: 'microsoft' };
 // Two selectors comma-unioned so we match both dashboard variants MS
 // currently ships:
 //   - Legacy Angular dashboard: <mee-card> with an "AddMedium" plus-icon
@@ -401,7 +405,9 @@ async function createContext(isMobile) {
 
 async function isLoggedIn(page) {
   try {
-    await page.goto(BING_REWARDS_URL, { waitUntil: 'domcontentloaded' });
+    // Retry here so a transient blip doesn't read as "logged out" and kick off
+    // a full re-login.
+    await gotoWithRetry(page, BING_REWARDS_URL, MS_NAV);
     await page.waitForTimeout(3000); // allow JS-based redirects to settle
     const url = page.url();
     log.status('Login check URL', url);
@@ -441,7 +447,7 @@ async function login(page) {
   // rewards.bing.com may JS-redirect to a /welcome landing page rather than
   // the Microsoft login form. Wait for that client-side redirect to settle
   // before checking the URL, then find and follow the sign-in link.
-  await page.goto(BING_REWARDS_URL, { waitUntil: 'domcontentloaded' });
+  await gotoWithRetry(page, BING_REWARDS_URL, MS_NAV);
   await page.waitForTimeout(3000); // allow JS-based redirects to complete
   const loginStartUrl = page.url();
   log.status('Login start URL', loginStartUrl);
@@ -586,10 +592,20 @@ async function readPointsBalance(page) {
     // used in regional rollouts. The aria-labels often carry the
     // localized "points" word so we match anywhere in the label.
     '[aria-label*="points" i]',
-    '[aria-label*="puntos" i]',
-    '[aria-label*="punkte" i]',
-    '[aria-label*="punkty" i]',
+    '[aria-label*="puntos" i]',    // es
+    '[aria-label*="pontos" i]',    // pt
+    '[aria-label*="punti" i]',     // it
+    '[aria-label*="punkte" i]',    // de
+    '[aria-label*="punkty" i]',    // pl
+    '[aria-label*="pontok" i]',    // hu
+    '[aria-label*="poeng" i]',     // no
+    '[aria-label*="pistettä" i]',  // fi
+    '[aria-label*="bod" i]',       // cs/sk stem
+    '[aria-label*="балл" i]',      // ru
+    '[aria-label*="点" i]',        // ja/zh
+    '[aria-label*="포인트" i]',    // ko
     '[aria-label*="balance" i]',
+    '[aria-label*="saldo" i]',     // es/it/pt
     // Card-text patterns MS uses for the top-bar counter
     'mee-rewards-counter-animation',
     '.points-summary-balance',
@@ -660,7 +676,26 @@ async function readPointsBalance(page) {
       // the existing selectors' locale coverage; localized variants can
       // be added as needed once we see them in diagnostics.
       const textDriven = await page.evaluate(() => {
-        const labels = ['Available points', 'Available Points'];
+        // Locale-portable set — English + top MS Rewards markets. Each
+        // label is the exact string MS uses for the "current balance"
+        // caption above the top-bar counter. When a locale isn't covered,
+        // the RSC path and structural selectors above usually catch it;
+        // this is the last-resort fallback.
+        const labels = [
+          'Available points', 'Available Points',
+          'Puntos disponibles',
+          'Points disponibles',
+          'Punkte verfügbar', 'Verfügbare Punkte',
+          'Punti disponibili',
+          'Pontos disponíveis',
+          'Punkty dostępne',
+          'Elérhető pontok',
+          'Pontos disponíveis',
+          '获取积分',    // zh Simplified
+          '獲取積分',    // zh Traditional
+          '利用可能なポイント', // ja
+          '사용 가능한 포인트', // ko
+        ];
         for (const label of labels) {
           const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
           let node;
@@ -1138,7 +1173,35 @@ function isFatalBrowserError(e) {
   return /target page, context or browser has been closed|browser has been closed|target closed/i.test(msg);
 }
 
-async function executeBingSearches(page, searchTerms) {
+// Fast in-context balance read via the same RSC path readPointsBalance
+// uses, but without navigating away from the current search results
+// page. `page.evaluate(fetch(...))` runs in the page's origin, so the
+// browser context's cookies authenticate it. Used by executeBingSearches
+// for the mid-loop zero-credit check.
+async function readBalanceQuick(page) {
+  try {
+    const rscText = await page.evaluate(async (url) => {
+      const r = await fetch(url, { headers: { rsc: '1' }, credentials: 'include' });
+      return await r.text();
+    }, BING_REWARDS_URL + '/dashboard');
+    const m = String(rscText || '').match(/"balance"\s*:\s*(\d+)/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  } catch { /* fall through */ }
+  return null;
+}
+
+// Per-run search execution. `startingBalance` (optional) enables the
+// mid-loop zero-credit abort: every `checkEvery` searches, we re-read
+// the balance and if it hasn't moved off `startingBalance`, we bail
+// out of the remaining queries. That's the pattern behind #135 — an
+// account/region that Bing accepts searches from but silently credits
+// 0 points. Running the full 30-search loop under that condition just
+// deepens the anti-bot footprint for zero reward.
+async function executeBingSearches(page, searchTerms, opts = {}) {
+  const { startingBalance = null, checkEvery = 8 } = opts;
   const maxDelay = cfg.ms_search_delay_max;
   const initMs = randomMs(maxDelay);
   log.info(`Executing ${searchTerms.length} Bing searches. Sleeping ${(initMs / 1000).toFixed(1)}s before first search.`);
@@ -1168,6 +1231,18 @@ async function executeBingSearches(page, searchTerms) {
       }
     }
     if (!ok) continue;
+    // Mid-loop zero-credit check. Every `checkEvery` completed searches
+    // (excluding the final one — no point checking if we're about to
+    // return), quickly re-read the balance via RSC. If it hasn't moved
+    // off `startingBalance`, Bing is silently rejecting points for this
+    // account/region (see #135). Abort the remaining searches.
+    if (startingBalance !== null && i > 0 && !isLast && (i + 1) % checkEvery === 0) {
+      const cur = await readBalanceQuick(page);
+      if (cur !== null && cur === startingBalance) {
+        log.warn(`Zero-credit abort: after ${i + 1} search${i + 1 === 1 ? '' : 'es'}, balance unchanged at ${cur}. Bing likely rejects points for this account/region — skipping remaining ${searchTerms.length - i - 1} to limit anti-bot footprint. (Common cause: region ineligibility or account flag — see #135.)`);
+        return;
+      }
+    }
     if (isLast) {
       log.info(`Search #${i + 1} done: "${term}".`);
     } else {
@@ -1256,7 +1331,7 @@ log.section('Desktop');
       await clickEveryPendingActivityCard(page);
       await claimPendingBonusPoints(page);
       await claimReadyToClaimCard(page);
-      await executeBingSearches(page, searchTerms.slice(0, desktopSearchCount));
+      await executeBingSearches(page, searchTerms.slice(0, desktopSearchCount), { startingBalance: before });
       after = await readPointsBalance(page);
       if (after != null) log.status('Points after', after + (before != null ? ` (+${after - before})` : ''));
       log.summary({
@@ -1359,7 +1434,7 @@ log.section('Mobile');
         await clickEveryPendingActivityCard(page);
         await claimPendingBonusPoints(page);
         await claimReadyToClaimCard(page);
-        await executeBingSearches(page, searchTerms.slice(-mobileSearchCount));
+        await executeBingSearches(page, searchTerms.slice(-mobileSearchCount), { startingBalance: before });
         after = await readPointsBalance(page);
         if (after != null) log.status('Points after', after + (before != null ? ` (+${after - before})` : ''));
         log.summary({

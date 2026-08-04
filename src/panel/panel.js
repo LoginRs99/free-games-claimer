@@ -873,7 +873,7 @@ let startupAutoCheck = null; // { current, total, siteName } while auto-check is
 // 'microsoft' (desktop) and 'microsoft-mobile' site cards — invoked once
 // via the linkedWith pointer and runs both sessions internally.
 const CLAIM_SCRIPT_ORDER = getClaimScriptOrder();
-const INDEPENDENT_SCHEDULED_SITE_IDS = new Set(['steamgifts', 'alienware-arena']);
+const INDEPENDENT_SCHEDULED_SITE_IDS = new Set(['alienware-arena']);
 
 // The valid-service enum and opt-in defaults are sourced from the registry
 // (src/sites.js — Phase 0 of #11). Each entry's defaultActive flag drives

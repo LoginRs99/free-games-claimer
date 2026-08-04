@@ -18,7 +18,6 @@ const pg    = svc['prime-gaming'] || {};
 const eg    = svc['epic-games']   || {};
 const gog   = svc['gog']          || {};
 const steam = svc['steam']        || {};
-const sg    = svc['steamgifts']   || {};
 const awa   = svc['alienware-arena'] || {};
 const ae    = svc['aliexpress']   || {};
 const ms    = svc['microsoft']    || {};
@@ -140,16 +139,6 @@ export const cfg = {
   // games with zero reviews (assumed shovelware). Turn off to catch
   // launch-day indies before they have reviews. See #61.
   steam_skip_unrated: steam.skipUnrated ?? true,
-  // steamgifts
-  sg_gift_type: sg.giftType || 'Special Mode',
-  sg_min_points: sg.minPoints ?? 70,
-  sg_max_entries: sg.maxEntries ?? 8,
-  sg_max_pages: sg.maxPages ?? 4,
-  sg_include_pinned: sg.includePinned ?? false,
-  sg_special_stages: sg.specialStages || 'Wishlist,Group,Recommended,DLC',
-  sg_ignored_words: sg.ignoredWords || 'furry,mahjong,hentai,waifu,sex,puzzle,exe,pussy,meme',
-  sg_entry_delay_sec: sg.entryDelaySec ?? 120,
-  sg_cookie: sg.cookie || process.env.SG_COOKIE || '',
   // alienware arena / AWA Twitch watch time
   awa_presence_minutes: awa.presenceMinutes ?? 30,
   awa_daily_target_minutes: awa.dailyTargetMinutes ?? 250,

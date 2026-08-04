@@ -10,7 +10,7 @@
 //   - restock detected (title contains "(Restocked!)")
 //
 // Pre-drop "1 hour before" / "5 minutes before" notifications come from
-// the engine-side lenovoSchedulerLoop in interactive-login.js, which reads
+// the engine-side lenovoSchedulerLoop in src/panel/panel.js, which reads
 // this same JSON file and wakes at the dynamic per-drop times. The watcher
 // just keeps the file fresh.
 //
@@ -23,11 +23,11 @@
 // canonically. Listing-fetch is one HTTP round trip; detail fetches only
 // run for drops that are new or whose schedule we don't have cached.
 
-import { launchContext, gotoWithRetry } from './src/browser.js';
+import { launchContext, gotoWithRetry } from '#src/browser.js';
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { datetime, notify, log, dataDir, handleSIGINT } from './src/util.js';
-import { cfg } from './src/config.js';
-import { siteVersion } from './src/sites.js';
+import { datetime, notify, log, dataDir, handleSIGINT } from '#src/util.js';
+import { cfg } from '#src/config.js';
+import { siteVersion } from '#src/sites.js';
 
 handleSIGINT();
 log.section(`Lenovo Gaming (v${siteVersion('lenovo-gaming')})`);

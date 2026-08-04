@@ -1,12 +1,20 @@
-// https://stackoverflow.com/questions/46745014/alternative-for-dirname-in-node-js-when-using-es6-modules
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, lstatSync } from 'node:fs';
-// not the same since these will give the absolute paths for this file instead of for the file using them
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Both anchors come from the package.json `imports` map rather than from this
+// file's own depth. Resolving them off __dirname only held while util.js sat
+// exactly one level below the root — moving the file would have silently
+// pointed data/ at src/data/, writing outside the mounted volume. Resolved
+// once at load; a missing alias throws here rather than at first use.
+const DATA_DIR = fileURLToPath(import.meta.resolve('#dataDir'));
+// #rootDir points at package.json, not the directory: a bare './' target is
+// matched by trailing slash, which Node deprecated (DEP0166) and warns about
+// once per process — including every spawned scraper.
+const ROOT_DIR = path.dirname(fileURLToPath(import.meta.resolve('#rootDir')));
 // explicit object instead of Object.fromEntries since the built-in type would loose the keys, better type: https://dev.to/svehla/typescript-object-fromentries-389c
-export const dataDir = s => path.resolve(__dirname, '..', 'data', s);
+export const dataDir = s => path.resolve(DATA_DIR, s);
+// for root-level paths that aren't under data/ (package.json, assets/)
+export const rootDir = s => path.resolve(ROOT_DIR, s);
 
 // modified path.resolve to return null if first argument is '0', used to disable screenshots
 export const resolve = (...a) => a.length && a[0] == '0' ? null : path.resolve(...a);
@@ -129,7 +137,7 @@ export const getOrCreateFingerprint = (profileDir, generate) => {
 // foreign-host check. Once present, the lock never clears on its own.
 //
 // We can safely remove these files because the app's runtime mutex
-// (browserBusy in interactive-login.js) prevents two Chromium processes
+// (browserBusy in src/panel/panel.js) prevents two Chromium processes
 // from racing on the same profile dir. Called from launchPersistentContext
 // sites before launch, and from the panel's startup as a clean-room
 // sweep across all known profile dirs. (Fix per feldorn#37, 2026-05-15
@@ -252,7 +260,7 @@ async function _appendDigest(entry) {
   }
   return Promise.resolve();
 }
-// Read-only accessor for interactive-login.js's digest scheduler.
+// Read-only accessor for src/panel/panel.js's digest scheduler.
 // Returns { buffer, lastFlushedAt } or an empty shape if the file
 // doesn't exist yet.
 export function readDigestBuffer() {
@@ -319,7 +327,7 @@ export const notify = (html, opts = {}) => {
   if (level === 'off') return Promise.resolve();
   if (level === 'actions' && kind === 'summary') return Promise.resolve();
   // Digest tier: buffer per-run summaries into a persistent file that
-  // the panel's dedicated digest scheduler (interactive-login.js)
+  // the panel's dedicated digest scheduler (src/panel/panel.js)
   // drains at notify_digest_hour local time each day. Action-kind
   // notifications (captchas, stale sessions, apprise errors, watcher
   // new-items) still fire real-time — the whole point of the digest

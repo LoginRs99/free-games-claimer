@@ -60,6 +60,23 @@ Schedule tab now shows a **Pause** / **Resume** toggle at the very top. State pe
 
 Ships on the site-registry pattern; every new watcher is one entry in `src/sites.js` plus one file in `src/platforms/`. Same shape as fanatical/humble/lenovo — nothing new to learn for a maintainer touching one of these.
 
+### Known fragility — please report if any of this breaks
+
+This release covers a lot of new surface. Some paths are only lightly validated. If you hit any of these, please file an issue (or a diagnostic Share from the Alerts tab) — real-world feedback is exactly what the maintainer testing couldn't produce.
+
+- **IndieGala watcher (v0.1).** DOM-fallback selectors were built by inspecting `freebies.indiegala.com` on release day (six free items visible: Game Of Mafia, Bad cat Sam, Whiskey.Mafia Leo's Family, Blacklist Mafia, Scamster Kombat, Die Young Prologue). Card layout has moved before and will move again. Symptom: the log line "IndieGala responded but no free items visible right now" while the storefront clearly has games. If that recurs, the DOM structure changed — please share the run log.
+- **PSN + Xbox watchers (v0.1).** Depend on GamerPower's `platforms` field containing recognizable console substrings (`Playstation 4/5`, `Xbox One`, `Xbox Series X|S`). Both use the un-filtered `?type=game`-omitted API endpoint since most console freebies are typed `DLC` / `Loot`. If GamerPower renames platforms or drops the entries entirely from this endpoint, these fall silent.
+- **Prime→Steam auto-redeem (2A).** End-to-end happy path is **untested** — we never had a real Steam key from Amazon during the release window to redeem for real. The queue write path, drain loop, retry accounting, and permanent-vs-transient failure branching are all in place, but the actual `#register_btn` click landing on Steam's success page has not been observed on this branch. First real trip may expose response-shape edge cases.
+- **Steam Points Shop weekly (2E).** Marked "best-effort" for a reason: the Points Shop is a heavy React SPA and my selectors may miss when the page hasn't fully hydrated. Log line "Steam Points Shop: no free items visible this week" while a free badge/frame is actually available means the timing or selector didn't match. Rewrite candidate for a follow-up.
+- **CAPTCHA helper (2D).** Zero call-site integration in this release — the helper exists, the config env vars are honored, but no site currently calls `solveHcaptcha`/`solveRecaptcha`. So it's effectively dead code until a follow-up wires EG/FAB to use it. Safe: guaranteed no behavior change vs 2.10.1.
+- **MS Rewards zero-credit abort.** Only fires on accounts that match the #135 pattern (Bing accepts searches but silently credits 0 points, typically region-gated). Healthy accounts won't see it. If your MS run aborts mid-loop with the message "Zero-credit abort: after N searches, balance unchanged," check your Bing Rewards region setting.
+- **Pause/resume scheduler.** State changes fire `fireSchedulerWakeups()` immediately, but if a scheduler run is already in-flight when you Pause, the current run completes normally — pause takes effect at the NEXT scheduled wake. That's intentional (don't interrupt work in progress).
+- **Node engine bump to `>=20.6.0`.** Docker users unaffected (image ships Node 22.23). Bare-metal users on Node 17/18/19 will see the fgc process fail to start until they upgrade Node or switch to Docker. Not a break for the primary supported path but worth flagging.
+
+### Panel gains a Notifications journal (opt-out is deletion of `data/notifications-log.json`)
+
+The Alerts tab now has a **Notifications sent** section: every apprise push fgc fires — real-time notifications, digest-buffered summaries, and delivery errors — appends to `data/notifications-log.json` and renders in the panel. Rolling cap of 500 entries. Filter by service / kind / status / text; expand rows to see the full body with clickable URLs. Rows within the last 24h are always visible; older ones sit behind a "Show more" button. This is the audit trail that was missing — no more "did that push actually fire?" mystery.
+
 ---
 
 ## What's new in 2.10.1

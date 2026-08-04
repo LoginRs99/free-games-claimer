@@ -100,6 +100,20 @@ export async function fetchGamerPowerGiveaways() {
   return Array.isArray(data) ? data : [];
 }
 
+// Same feed but without the ?type=game filter. Console freebies (PS Plus,
+// Xbox Free Play Days, cross-platform DLC) live under types "DLC", "Loot",
+// "Early Access" etc.; the type=game filter above drops them all. The PSN
+// and Xbox watchers use this variant since a "free full game on Xbox"
+// promo is often categorised as DLC by GamerPower when it ships alongside
+// a PC edition. Same shape, same field names — only the URL differs.
+const API_URL_ALL = 'https://www.gamerpower.com/api/giveaways';
+export async function fetchGamerPowerAll() {
+  const res = await fetch(API_URL_ALL, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`gamerpower API: ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
 // Return only entries whose `platforms` field matches the collector's
 // pattern. Caller drives this from inside the collector script after
 // it's done its own first-party discovery.

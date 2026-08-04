@@ -19,6 +19,40 @@ export const rootDir = s => path.resolve(ROOT_DIR, s);
 // modified path.resolve to return null if first argument is '0', used to disable screenshots
 export const resolve = (...a) => a.length && a[0] == '0' ? null : path.resolve(...a);
 
+// v2.11.0: notifications journal tags each entry with the source
+// service. Derive it from process.argv[1] basename (indiegala.js →
+// 'indiegala'; panel.js → 'panel'; short-lived tools that don't set
+// argv[1] fall through to 'unknown'). Frozen at load time — every
+// notify() call inside this process sees the same tag without having
+// to pass it in.
+const MODULE_SERVICE_TAG = (() => {
+  try {
+    const scriptPath = String(process.argv[1] || '').trim();
+    if (!scriptPath) return 'unknown';
+    return path.basename(scriptPath, '.js') || 'unknown';
+  } catch { return 'unknown'; }
+})();
+
+// Top-level journal writer. Both the exec-callback path and the digest-
+// buffer path go through this so every notify() call — success, error,
+// or buffered — surfaces in the panel Notifications tab. Best-effort:
+// never throws, never blocks the notification.
+function writeJournalEntry(entry) {
+  try {
+    const journalFile = path.resolve(DATA_DIR, 'notifications-log.json');
+    let data;
+    try {
+      const raw = existsSync(journalFile) ? readFileSync(journalFile, 'utf8') : '';
+      data = raw ? JSON.parse(raw) : { entries: [] };
+      if (!data || !Array.isArray(data.entries)) data = { entries: [] };
+    } catch { data = { entries: [] }; }
+    data.entries.push(entry);
+    // Cap at 500 entries; drop oldest first.
+    if (data.entries.length > 500) data.entries = data.entries.slice(-500);
+    writeFileSync(journalFile, JSON.stringify(data, null, 2));
+  } catch { /* journal is best-effort — never break notify */ }
+}
+
 // json database
 import { JSONFilePreset } from 'lowdb/node';
 export const jsonDb = (file, defaultData) => JSONFilePreset(dataDir(file), defaultData);
@@ -335,6 +369,17 @@ export const notify = (html, opts = {}) => {
   // Buffer is a JSON file rather than in-memory so restarts don't
   // lose accumulated entries.
   if (level === 'digest' && kind === 'summary') {
+    writeJournalEntry({
+      at: datetime(),
+      service: MODULE_SERVICE_TAG,
+      title: opts.title || cfg.notify_title || null,
+      body: String(html || '').slice(0, 2000),
+      kind,
+      status: 'buffered',
+      errorSnippet: null,
+      targets: 0,
+      attached: opts.screenshot || null,
+    });
     return _appendDigest({
       at: datetime(),
       title: opts.title || cfg.notify_title || null,
@@ -394,6 +439,21 @@ export const notify = (html, opts = {}) => {
     if (cfg.notify_title) args.push('-t', cfg.notify_title);
     if (attachPath) args.push('-a', attachPath);
     if (cfg.debug) console.debug(`apprise ${args.map(a => `'${a}'`).join(' ')}`); // this also doesn't escape, but it's just for info
+    // Journal helper for the exec-callback paths (v2.11.0). Closes over
+    // this call's kind/attachPath/notifyUrls so the entry has the right
+    // metadata. Delegates the write to writeJournalEntry at module top
+    // so both this path and the digest path share the same journal shape.
+    const journalAppend = (status, errorSnippet) => writeJournalEntry({
+      at: datetime(),
+      service: MODULE_SERVICE_TAG,
+      title: cfg.notify_title || null,
+      body: String(html || '').slice(0, 2000),
+      kind,
+      status,           // 'ok' | 'error'
+      errorSnippet: errorSnippet ? String(errorSnippet).slice(0, 300) : null,
+      targets: notifyUrls.length,
+      attached: attachPath || null,
+    });
     execFile('apprise', args, (error, stdout, stderr) => {
       if (error) {
         // Surface apprise's actual exit status + stdout + stderr
@@ -419,6 +479,7 @@ export const notify = (html, opts = {}) => {
           error.message = error.message + '\napprise diag: ' + combinedDiag;
         }
         console.log(`error: ${error.message}`);
+        journalAppend('error', combinedDiag || error.message);
         if (error.message.includes('command not found')) {
           console.info('Run `pip install apprise`. See https://github.com/vogler/free-games-claimer#notifications');
         }
@@ -440,6 +501,7 @@ export const notify = (html, opts = {}) => {
       // failure earlier in the run doesn't accumulate toward the trip
       // when the network was otherwise fine.
       _appriseNetFailStreak = 0;
+      journalAppend('ok', null);
       resolve();
     });
   }));

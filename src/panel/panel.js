@@ -3348,6 +3348,40 @@ const PANEL_HTML = `<!DOCTYPE html>
   .alert-row .ar-actions button.ar-btn-mark:hover { background: #2a4f3c; }
   .alert-row .ar-actions button.ar-btn-dismiss { background: #1c2c4a; color: #a0b4d4; border-color: #2c4068; }
   .alert-row .ar-actions button.ar-btn-dismiss:hover { background: #263a5e; }
+  /* Notifications journal — dedicated styling, applied only to rows in the
+     Notifications-sent section. Not shared with the other alerts sections
+     (redeems / sessions / discoveries / github) so those keep their compact
+     one-line-per-item layout. Design goals: strong inter-row separation so
+     each entry reads as a distinct message; the expanded body sits inside
+     a bordered container with a left accent bar so the message clearly
+     belongs to the header above it; tightened header padding vs looser
+     body treatment to give a compact-header → spacious-body hierarchy. */
+  .notif-row { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); margin-bottom: 4px; }
+  .notif-row:last-child { border-bottom: none; margin-bottom: 0; }
+  .notif-row:hover { background: #131b2c; }
+  .notif-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; cursor: pointer; padding: 2px 0; }
+  .notif-header .notif-chevron { width: 14px; color: #8aa0c2; font-family: monospace; font-size: 14px; user-select: none; flex-shrink: 0; }
+  /* Timestamp lives second in the row (right after the chevron), monospaced so
+     digits line up across rows to form a quiet left column. HH:MM only on the
+     primary line; hover shows full HH:MM:SS via the title attribute. Extra
+     right margin sets the time apart as its own column from the pills. */
+  .notif-header .notif-time { font-family: 'Menlo', 'Consolas', 'SF Mono', monospace; font-variant-numeric: tabular-nums; font-size: 12.5px; color: #c8d4eb; min-width: 48px; flex-shrink: 0; letter-spacing: 0.02em; margin-right: 8px; }
+  .notif-header .notif-time .notif-date { display: block; font-size: 10.5px; color: #8aa0c2; letter-spacing: 0; margin-top: 1px; }
+  .notif-header .notif-svc { background: #254; color: #8cf; }
+  /* "Free Games Claimer" appears on every row since that's the fixed
+     NOTIFY_TITLE; on this tab the identity is implicit, so render very
+     softly — just enough contrast to read if you look, out of the way if
+     you don't. */
+  .notif-header .notif-title-text { margin-left: 4px; color: #5b7095; font-size: 11px; font-weight: 400; }
+  .notif-preview { margin-top: 8px; margin-left: 22px; padding: 8px 14px; background: rgba(14,23,38,0.6); border-left: 3px solid #223649; border-radius: 4px; color: #a5b7d0; font-size: 12.5px; line-height: 1.45; }
+  .notif-body-block { margin-top: 10px; margin-left: 22px; padding: 12px 16px; background: #0e1726; border-left: 3px solid #2a4a5e; border-radius: 4px; font-size: 13.5px; line-height: 1.5; color: #dbe6ff; word-break: break-word; }
+  .notif-body-block a { color: #4ecca3; text-decoration: none; border-bottom: 1px dotted #2c8060; padding-bottom: 1px; }
+  .notif-body-block a:hover { color: #6bdcb5; border-bottom-color: #4ecca3; }
+  .notif-body-block br + br { display: block; margin-top: 4px; content: ''; }
+  .notif-err { margin-top: 8px; margin-left: 22px; padding: 8px 12px; background: #2a1418; border-left: 3px solid #e94560; border-radius: 4px; color: #e94560; font-size: 12px; line-height: 1.5; }
+  .notif-loadmore { margin-top: 16px; text-align: center; padding-bottom: 4px; }
+  .notif-loadmore button { padding: 8px 18px; font-size: 12.5px; border-radius: 4px; cursor: pointer; border: 1px solid #2c4068; background: #1a2540; color: #a0b4d4; font-family: inherit; }
+  .notif-loadmore button:hover { background: #26365a; color: #dbe6ff; }
   .alerts-pointer { padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
   .alerts-pointer button { padding: 6px 14px; font-size: 12px; border-radius: 3px; cursor: pointer; border: 1px solid #2c5a45; background: #1f3d2f; color: #6fd49a; font-family: inherit; }
   .diag-head { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; margin-top: 24px; }
@@ -4182,6 +4216,39 @@ const PANEL_HTML = `<!DOCTYPE html>
     <div id="alertsSessions"></div>
     <div id="alertsDiscoveries"></div>
     <div id="alertsGithub"></div>
+    <div class="alerts-section" id="alertsNotifications">
+      <div class="alerts-section-head">
+        <h4 style="margin-top:24px">Notifications sent</h4>
+        <span class="as-count" id="notifCount">0</span>
+        <span class="as-hint">Audit trail of pushes fired by fgc — most recent first. Filter to zero in on a specific service or a failure. Keeps the last 500 entries; older prune automatically.</span>
+      </div>
+      <div class="notif-toolbar" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0;align-items:center">
+        <label style="display:flex;gap:4px;align-items:center;font-size:0.9em">Service
+          <select id="notifFilterService" onchange="renderNotificationsSection()" style="padding:2px 6px">
+            <option value="">all</option>
+          </select>
+        </label>
+        <label style="display:flex;gap:4px;align-items:center;font-size:0.9em">Kind
+          <select id="notifFilterKind" onchange="renderNotificationsSection()" style="padding:2px 6px">
+            <option value="">all</option>
+            <option value="action">action</option>
+            <option value="summary">summary</option>
+            <option value="buffered">buffered (digest)</option>
+          </select>
+        </label>
+        <label style="display:flex;gap:4px;align-items:center;font-size:0.9em">Status
+          <select id="notifFilterStatus" onchange="renderNotificationsSection()" style="padding:2px 6px">
+            <option value="">all</option>
+            <option value="ok">ok</option>
+            <option value="error">error</option>
+            <option value="buffered">buffered</option>
+          </select>
+        </label>
+        <input type="text" id="notifFilterQ" placeholder="text search body/title" onkeyup="renderNotificationsSection()" style="padding:2px 6px;flex:1;min-width:150px">
+        <button type="button" class="btn small" onclick="refreshNotifications()">Refresh</button>
+      </div>
+      <div id="notifBody">Loading…</div>
+    </div>
     <div class="diag-head">
       <div>
         <h3 style="margin-top:24px">Errors</h3>
@@ -5041,6 +5108,9 @@ async function renderAlertsSections() {
   const discEl = document.getElementById('alertsDiscoveries');
   const ghEl = document.getElementById('alertsGithub');
   if (!redeemsEl || !sessionsEl || !discEl) return;
+  // Fire-and-forget the notifications journal fetch alongside the alerts
+  // summary — independent endpoint, so no reason to serialize.
+  refreshNotifications().catch(() => {});
   try {
     const r = await fetch(BASE_PATH + '/api/alerts/summary');
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -7120,6 +7190,177 @@ async function resumeScheduler() {
   }
 }
 
+// v2.11.0 notification journal. Cache the last fetched entries so the
+// filter dropdowns can re-render instantly without a round-trip.
+let _notificationsCache = [];
+// Paging: show up to N entries at a time. "Load more" increments the cap.
+// Two rules:
+//   - Minimum floor of 5 rows so a quiet setup still shows meaningful history.
+//   - The last 24h of entries are ALWAYS visible (floor overrides the cap for
+//     recency — a busy day never gets hidden behind "Load more").
+// Older-than-24h entries land behind Load more, revealed in +10 increments.
+let _notifShowCount = 5;
+const NOTIF_RECENT_HOURS = 24;
+const NOTIF_LOAD_MORE_STEP = 10;
+// Which entries are open in the collapse UI. Numeric indexes into the
+// filtered slice (matches the row position at time of click).
+const _notifOpenSet = new Set();
+function toggleNotifOpen(idx) {
+  if (_notifOpenSet.has(idx)) _notifOpenSet.delete(idx);
+  else _notifOpenSet.add(idx);
+  renderNotificationsSection();
+}
+function loadMoreNotifs() {
+  _notifShowCount += NOTIF_LOAD_MORE_STEP;
+  renderNotificationsSection();
+}
+function collapseNotifsToNewest() {
+  _notifShowCount = 5;
+  _notifOpenSet.clear();
+  renderNotificationsSection();
+}
+async function refreshNotifications() {
+  try {
+    const r = await fetch(BASE_PATH + '/api/notifications/list');
+    const j = await r.json();
+    _notificationsCache = Array.isArray(j.entries) ? j.entries : [];
+    // Populate service dropdown with the union of services seen.
+    const services = Array.from(new Set(_notificationsCache.map(e => e.service).filter(Boolean))).sort();
+    const svcSel = document.getElementById('notifFilterService');
+    if (svcSel) {
+      const cur = svcSel.value;
+      svcSel.innerHTML = '<option value="">all</option>' + services.map(s => '<option value="' + escapeHtml(s) + '">' + escapeHtml(s) + '</option>').join('');
+      if (cur && services.includes(cur)) svcSel.value = cur;
+    }
+    renderNotificationsSection();
+  } catch (e) {
+    const body = document.getElementById('notifBody');
+    if (body) body.innerHTML = '<div class="muted">Failed to load: ' + escapeHtml(e.message || 'unknown') + '</div>';
+  }
+}
+function renderNotificationsSection() {
+  const body = document.getElementById('notifBody');
+  const countEl = document.getElementById('notifCount');
+  if (!body) return;
+  const svc = (document.getElementById('notifFilterService') || {}).value || '';
+  const kind = (document.getElementById('notifFilterKind') || {}).value || '';
+  const stat = (document.getElementById('notifFilterStatus') || {}).value || '';
+  const q = ((document.getElementById('notifFilterQ') || {}).value || '').trim().toLowerCase();
+  const filtered = _notificationsCache.filter(e => {
+    if (svc && e.service !== svc) return false;
+    if (kind && e.kind !== kind) return false;
+    if (stat && e.status !== stat) return false;
+    if (q) {
+      const hay = ((e.body || '') + ' ' + (e.title || '')).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  if (countEl) countEl.textContent = String(filtered.length) + (filtered.length !== _notificationsCache.length ? ' / ' + _notificationsCache.length : '');
+  if (filtered.length === 0) {
+    body.innerHTML = _notificationsCache.length === 0
+      ? '<div class="muted">No notifications logged yet. Anything fgc pushes to your notifier will appear here.</div>'
+      : '<div class="muted">No entries match the current filter.</div>';
+    return;
+  }
+  // Paging: default cap of _notifShowCount, but always show every entry from
+  // the last NOTIF_RECENT_HOURS window regardless of the cap. Rationale:
+  // yesterday's daily-run notifications shouldn't get hidden behind "Load
+  // more" — recency is more valuable than a strict N-row cap.
+  const cutoffIso = new Date(Date.now() - NOTIF_RECENT_HOURS * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  const recentCount = filtered.filter(e => String(e.at || '') >= cutoffIso).length;
+  const effectiveCap = Math.max(_notifShowCount, recentCount);
+  const visible = filtered.slice(0, effectiveCap);
+  // Default-open the first 3 rows on any render pass — matches the "recent
+  // items visible at a glance" ask. Older rows stay collapsed unless user
+  // clicked to open them.
+  const DEFAULT_OPEN_TOP = 3;
+  function renderNotificationBody(raw) {
+    const html = String(raw || '');
+    const pieces = html.split(/<br\\s*\\/?>/gi);
+    const escapedLines = pieces.map(part => {
+      const stripped = part.replace(/<[^>]+>/g, '');
+      const esc = escapeHtml(stripped);
+      return esc.replace(/(https?:\\/\\/[^\\s<>()\\[\\]\\u201C\\u201D"\\']+)/g, function(u) {
+        let url = u; let tail = '';
+        const trailRe = /[),.;:!?]+$/;
+        const m = trailRe.exec(url);
+        if (m) { tail = m[0]; url = url.slice(0, -tail.length); }
+        return '<a href="' + url + '" target="_blank" rel="noopener" style="color:#4ecca3;text-decoration:underline">' + url + '</a>' + tail;
+      });
+    });
+    return escapedLines.join('<br>');
+  }
+  const rows = visible.map((e, idx) => {
+    const isOpen = idx < DEFAULT_OPEN_TOP || _notifOpenSet.has(idx);
+    const chevron = isOpen ? '\\u25be' : '\\u25b8'; // ▾ / ▸
+    const statusClass = e.status === 'error' ? 'ar-state-closed' : (e.status === 'buffered' ? 'ar-state' : 'ar-state-open');
+    const statusPill = '<span class="ar-state ' + statusClass + '">' + escapeHtml(String(e.status || '?')) + '</span>';
+    const kindPill = '<span class="ar-state" style="background:#333;color:#ddd">' + escapeHtml(String(e.kind || '?')) + '</span>';
+    const svcPill = e.service ? '<span class="ar-state notif-svc">' + escapeHtml(e.service) + '</span>' : '';
+    // Drop the title on the notifications tab entirely: it's fixed to
+    // NOTIFY_TITLE for every row (typically "Free Games Claimer"), so it
+    // adds no per-row signal — just noise. If a caller ever passes a
+    // custom title, surface it in a muted subtitle style so a diverging
+    // value still shows up but doesn't compete with the service pill.
+    const defaultTitles = ['Free Games Claimer', 'FGC', ''];
+    const titlePart = (e.title && !defaultTitles.includes(String(e.title).trim()))
+      ? '<span class="notif-title-text">' + escapeHtml(e.title) + '</span>'
+      : '';
+    // Collapsed preview: single-line snippet so the user can eyeball what's
+    // in a row without opening it.
+    const rawPreview = String(e.body || '').replace(/<br\\s*\\/?>/gi, ' \\u00b7 ').replace(/<[^>]+>/g, '').slice(0, 140);
+    const previewLine = !isOpen && rawPreview
+      ? '<div class="notif-preview">' + escapeHtml(rawPreview) + (rawPreview.length >= 140 ? '\\u2026' : '') + '</div>'
+      : '';
+    const bodyPanel = isOpen
+      ? '<div class="notif-body-block">' + renderNotificationBody(e.body || '') + '</div>'
+      : '';
+    const errLine = e.errorSnippet
+      ? '<div class="notif-err">' + escapeHtml(e.errorSnippet) + '</div>'
+      : '';
+    // Timestamp: show HH:MM:SS only for today; older entries add MM-DD
+    // as a smaller subtitle. Storage format is "YYYY-MM-DD HH:MM:SS"
+    // in server-local wall time.
+    const at = String(e.at || '');
+    // Local-time YYYY-MM-DD so the today comparison matches storage format
+    // (server-local, not UTC). Using toISOString would misjudge across
+    // midnight in non-UTC timezones.
+    const _now = new Date();
+    const _pad2 = n => String(n).padStart(2, '0');
+    const todayPrefix = _now.getFullYear() + '-' + _pad2(_now.getMonth()+1) + '-' + _pad2(_now.getDate());
+    // HH:MM on the primary line; full HH:MM:SS surfaces via the title
+    // (hover) attribute. Older-than-today entries add a smaller date row
+    // underneath so the date stays recoverable without inflating the
+    // primary line's height.
+    const hhmm = at.length >= 16 ? at.slice(11, 16) : at;
+    const hhmmss = at.length >= 19 ? at.slice(11, 19) : at;
+    let timeCell;
+    if (at.startsWith(todayPrefix)) {
+      timeCell = escapeHtml(hhmm);
+    } else if (at.length >= 19) {
+      timeCell = escapeHtml(hhmm) + '<span class="notif-date">' + escapeHtml(at.slice(0, 10)) + '</span>';
+    } else {
+      timeCell = escapeHtml(at);
+    }
+    return '<div class="notif-row">' +
+      '<div class="notif-header" onclick="toggleNotifOpen(' + idx + ')">' +
+        '<span class="notif-chevron">' + chevron + '</span>' +
+        '<span class="notif-time" title="' + escapeHtml(at || '') + '">' + timeCell + '</span>' +
+        svcPill + statusPill + kindPill + titlePart +
+      '</div>' +
+      previewLine + bodyPanel + errLine +
+    '</div>';
+  }).join('');
+  const remaining = filtered.length - visible.length;
+  const footer = remaining > 0
+    ? '<div class="notif-loadmore"><button type="button" onclick="loadMoreNotifs()">Show ' + Math.min(NOTIF_LOAD_MORE_STEP, remaining) + ' more (of ' + remaining + ' hidden)</button></div>'
+    : (_notifShowCount > 5 && filtered.length <= _notifShowCount
+      ? '<div class="notif-loadmore"><button type="button" onclick="collapseNotifsToNewest()">Collapse to newest 5</button></div>'
+      : '');
+  body.innerHTML = rows + footer;
+}
+
 function showToast(message, type = 'info', duration = 4000) {
   const t = document.createElement('div');
   t.className = 'toast ' + type;
@@ -8554,6 +8795,26 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && req.url === '/api/state') {
       sendJson(res, await getState());
+      return;
+    }
+
+    if (req.method === 'GET' && req.url.startsWith('/api/notifications/list')) {
+      // v2.11.0 notification journal. Reads data/notifications-log.json,
+      // returns all entries newest-first. Filtering is client-side; the
+      // 500-entry cap keeps the payload small.
+      try {
+        const journalPath = dataDir('notifications-log.json');
+        let entries = [];
+        if (existsSync(journalPath)) {
+          const raw = readFileSync(journalPath, 'utf8');
+          const j = raw ? JSON.parse(raw) : { entries: [] };
+          if (j && Array.isArray(j.entries)) entries = j.entries.slice();
+        }
+        entries.reverse(); // newest first
+        sendJson(res, { entries });
+      } catch (e) {
+        sendJson(res, { entries: [], error: e.message }, 200);
+      }
       return;
     }
 

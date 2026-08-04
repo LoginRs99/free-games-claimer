@@ -199,5 +199,7 @@ export const cfg = {
   // Steam Points Shop free-weekly-item claim (v2.11.0 / 2E). Opt-in via
   // STEAM_POINTS_SHOP_WEEKLY=1 — off by default because the Points Shop
   // layout is more variable than the main store, so runs are best-effort.
-  steam_points_shop_weekly: process.env.STEAM_POINTS_SHOP_WEEKLY === '1',
+  // Per-service Settings toggle wins over the env var when set; env stays as
+  // a fallback for existing deploys that opted in via docker-compose.
+  steam_points_shop_weekly: steam.pointsShopWeekly ?? (process.env.STEAM_POINTS_SHOP_WEEKLY === '1'),
 };

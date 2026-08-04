@@ -88,24 +88,46 @@ try {
   await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
   await page.waitForTimeout(2000);
 
-  // DOM fallback: even if the SPA didn't fire an API request that we
-  // caught, the rendered product cards usually contain the same data.
-  // We pick a wide selector union so a card class rename doesn't tank
-  // the collector — each candidate has been seen live at some point
-  // in IndieGala's card layouts. Extract the visible product name +
-  // href; the notify pipeline only needs those two.
+  // DOM path is the *primary* on freebies.indiegala.com — the page is
+  // server-rendered, product cards are inline HTML, no XHR happens at
+  // page load. Each free item is an `<a class="fit-click" href=
+  // "https://freebies.indiegala.com/<slug>" title="Go to <Real Title>
+  // page">`, and the same card carries a sibling `.product-title` div
+  // and an `<img alt="<Real Title> product image">`. Prefer the anchor
+  // title attribute (structural) with a fallback to the sibling text.
+  //
+  // Historical note: v0.1 shipped with a DOM selector union that only
+  // matched `/store/game/`, `/showcase/`, `/games/` — none of which
+  // freebies.indiegala.com actually uses. Cost real coverage. Fixed in
+  // v2.11.0 to use the actual URL shape.
   if (captured.length === 0) {
     try {
       const domProducts = await page.evaluate(() => {
         const out = [];
-        // Cards on freebies.indiegala.com generally wrap in an anchor
-        // pointing at /store/game/<slug> or /showcase/<slug>.
-        const anchors = document.querySelectorAll('a[href*="/store/game/"], a[href*="/showcase/"], a[href*="/games/"]');
+        const anchors = document.querySelectorAll('a.fit-click[href*="freebies.indiegala.com/"], a[href*="freebies.indiegala.com/"][title]');
         for (const a of anchors) {
           const href = a.href || '';
           if (!href) continue;
-          const titleEl = a.querySelector('h2, h3, h4, [class*="title" i], [class*="name" i]') || a;
-          const title = (titleEl.textContent || '').trim();
+          // Skip navigation anchors — the freebies homepage link itself
+          // (href="https://freebies.indiegala.com" with no slug).
+          if (/^https?:\/\/freebies\.indiegala\.com\/?$/.test(href)) continue;
+          // Primary: title="Go to <Real Title> page" — strip the wrapper.
+          let title = '';
+          const t = (a.getAttribute('title') || '').trim();
+          const m = /^Go to\s+(.+?)\s+page\s*$/i.exec(t);
+          if (m) title = m[1];
+          // Fallback: sibling .product-title div (present on card layouts).
+          if (!title) {
+            const card = a.closest('.products-col-inner, .product-card, [class*="product"]');
+            const tEl = card && card.querySelector('.product-title, [class*="product-title"]');
+            if (tEl) title = (tEl.textContent || '').trim();
+          }
+          // Fallback: image alt="<Real Title> product image".
+          if (!title) {
+            const card = a.closest('.products-col-inner, .product-card, [class*="product"]') || a.parentElement;
+            const img = card && card.querySelector('img[alt]');
+            if (img) title = String(img.getAttribute('alt') || '').replace(/\s*product\s*image\s*$/i, '').trim();
+          }
           if (!title || title.length > 200) continue;
           out.push({ title, url: href });
         }
@@ -177,15 +199,17 @@ if (newEntries.length === 0) {
   process.exit(0);
 }
 
-if (isFirstRun) {
-  log.info(`Baseline established with ${newEntries.length} entr${newEntries.length === 1 ? 'y' : 'ies'} (no notification on first run)`);
-  for (const e of newEntries) log.game(e.name, String(e.note));
-  process.exit(0);
-}
+for (const e of newEntries) log.game(e.name, isFirstRun ? String(e.note) : `new — ${e.note}`);
 
-for (const e of newEntries) log.game(e.name, `new — ${e.note}`);
-
-const subject = `IndieGala has ${newEntries.length} new free item${newEntries.length === 1 ? '' : 's'} — claim manually`;
+// First-run behaviour (v2.11.0): send ONE "baseline" notification with the
+// tracked list so the user can see what's being watched from the start.
+// Subsequent runs stay quiet unless truly-new items land. Skips fanatical /
+// humble's original "silent baseline" convention here — those matured over
+// many months so users already learned the pattern; the new watchers benefit
+// from being loud on setup so the user can verify coverage on day one.
+const subject = isFirstRun
+  ? `IndieGala baseline: ${newEntries.length} free item${newEntries.length === 1 ? '' : 's'} being tracked (subsequent runs only ping on new entries)`
+  : `IndieGala has ${newEntries.length} new free item${newEntries.length === 1 ? '' : 's'} — claim manually`;
 log.info(subject);
 const lines = [subject];
 for (const e of newEntries) lines.push(`- ${e.name}: ${e.url}`);

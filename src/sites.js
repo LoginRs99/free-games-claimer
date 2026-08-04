@@ -441,6 +441,9 @@ export const SITES = [
       { key: 'skipUnrated', env: 'STEAM_SKIP_UNRATED', type: 'boolean', default: true,
         label: 'Skip unrated games (no reviews yet)',
         hint: 'Default ON — unrated games (zero reviews) are usually low-quality or brand-new shovelware. Turn OFF to let unrated games through (still subject to the Min price filter). Helpful for catching launch-day free indies before they accumulate reviews (#61).' },
+      { key: 'pointsShopWeekly', env: 'STEAM_POINTS_SHOP_WEEKLY', type: 'boolean', default: false,
+        label: 'Claim Steam Points Shop free weekly item',
+        hint: 'When on, steam.js visits the Points Shop free-items page at the end of the run and claims the current free weekly item (badge / animated avatar frame / sticker). ISO-week dedup so we only try once per week. Best-effort — the Points Shop layout is more variable than the main store, so failures just log and continue.' },
     ],
     async checkLogin(page) {
       try {

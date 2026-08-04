@@ -1,6 +1,6 @@
 import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { datetime, notify, log, dataDir, handleSIGINT } from '#src/util.js';
-import { fetchGamerPowerGiveaways, filterFor } from '#src/gamerpower.js';
+import { fetchGamerPowerAll, filterFor } from '#src/gamerpower.js';
 import { siteVersion } from '#src/sites.js';
 
 // Watch-only PlayStation Plus / free-on-PSN tracker. No login, no
@@ -40,7 +40,7 @@ function saveState(state) {
 
 let entries;
 try {
-  const all = await fetchGamerPowerGiveaways();
+  const all = await fetchGamerPowerAll();
   entries = filterFor(all, 'psn');
   log.status('PSN entries from GamerPower', entries.length);
 } catch (e) {
@@ -94,15 +94,12 @@ if (newEntries.length === 0) {
   process.exit(0);
 }
 
-if (isFirstRun) {
-  log.info(`Baseline established with ${newEntries.length} entr${newEntries.length === 1 ? 'y' : 'ies'} (no notification on first run)`);
-  for (const e of newEntries) log.game(e.name, String(e.note));
-  process.exit(0);
-}
+for (const e of newEntries) log.game(e.name, isFirstRun ? String(e.note) : `new — ${e.note}`);
 
-for (const e of newEntries) log.game(e.name, `new — ${e.note}`);
-
-const subject = `PSN has ${newEntries.length} new free item${newEntries.length === 1 ? '' : 's'} — claim manually`;
+// First-run: send ONE baseline notification so the user can verify coverage.
+const subject = isFirstRun
+  ? `PSN baseline: ${newEntries.length} free item${newEntries.length === 1 ? '' : 's'} being tracked (subsequent runs only ping on new entries)`
+  : `PSN has ${newEntries.length} new free item${newEntries.length === 1 ? '' : 's'} — claim manually`;
 log.info(subject);
 const lines = [subject];
 for (const e of newEntries) lines.push(`- ${e.name}: ${e.url}`);

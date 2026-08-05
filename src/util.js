@@ -1,5 +1,8 @@
 import path from 'node:path';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, lstatSync } from 'node:fs';
+import path from 'node:path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, lstatSync } from 'node:fs';
+
 // Defined in paths.js and re-exported here, which is where the rest of the tree
 // imports them from.
 import { dataDir, rootDir } from './paths.js';

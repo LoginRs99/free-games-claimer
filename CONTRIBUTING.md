@@ -14,13 +14,25 @@
 
 The engine routes everything through `src/sites.js` (the registry) plus a per-site runner script. To add a new claim/watch site, two files change: a registry entry and a `src/platforms/<id>.js` runner.
 
+Paths come from `src/paths.js` — `ROOT_DIR`, `DATA_DIR`, `platformFile()`, and
+the `dataDir()` / `rootDir()` join helpers, which `src/util.js` re-exports and
+most files import from there. Never rebuild a directory from a file's own depth.
+
+`paths.js` holds anchors only — locations that derive from an alias in
+`package.json`. A filename is not an anchor: your watcher state is
+`dataDir('<id>-watch.json')` in your own runner, your claim DB is
+`jsonDb('<id>.json')`, `config.json` is `CONFIG_FILE_PATH` in `src/app-config.js`.
+Add to `paths.js` only when the anchor itself is missing, never to register a
+file — it imports nothing local, so anything can import it without hitting the
+`config.js` ↔ `util.js` cycle.
+
 ### 1. Register it in `src/sites.js`
 
 Append an entry to the `SITES` array. Required fields:
 
 | Field | Notes |
 |---|---|
-| `id` | stable identifier (lowercase, hyphenated) — used in config keys, deep links, claim DB filename |
+| `id` | stable identifier (lowercase, hyphenated) — used in config keys, deep links, claim DB filename. Stick to `a-z A-Z 0-9 -`: the id becomes a filename and reaches shell commands and `CLAIM_CMD`, so anything else is asking for quoting trouble |
 | `name` | human-readable label shown in cards and notifications |
 | `script` | `platformScript('foo')` — resolves through the `#platforms/*` alias and returns a repo-root-relative path. The extension is optional: `'foo'`, `'foo.js'` and `'foo.js.js'` all yield `src/platforms/foo.js`. `null` for sub-services that share a parent's script |
 | `loginUrl` | page to navigate to for interactive login; `null` for no-login services (watchers) |

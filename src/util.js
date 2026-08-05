@@ -1,20 +1,9 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, lstatSync } from 'node:fs';
-// Both anchors come from the package.json `imports` map rather than from this
-// file's own depth. Resolving them off __dirname only held while util.js sat
-// exactly one level below the root — moving the file would have silently
-// pointed data/ at src/data/, writing outside the mounted volume. Resolved
-// once at load; a missing alias throws here rather than at first use.
-const DATA_DIR = fileURLToPath(import.meta.resolve('#dataDir'));
-// #rootDir points at package.json, not the directory: a bare './' target is
-// matched by trailing slash, which Node deprecated (DEP0166) and warns about
-// once per process — including every spawned scraper.
-const ROOT_DIR = path.dirname(fileURLToPath(import.meta.resolve('#rootDir')));
-// explicit object instead of Object.fromEntries since the built-in type would loose the keys, better type: https://dev.to/svehla/typescript-object-fromentries-389c
-export const dataDir = s => path.resolve(DATA_DIR, s);
-// for root-level paths that aren't under data/ (package.json, assets/)
-export const rootDir = s => path.resolve(ROOT_DIR, s);
+// Defined in paths.js and re-exported here, which is where the rest of the tree
+// imports them from.
+import { dataDir, rootDir } from './paths.js';
+export { dataDir, rootDir };
 
 // modified path.resolve to return null if first argument is '0', used to disable screenshots
 export const resolve = (...a) => a.length && a[0] == '0' ? null : path.resolve(...a);
@@ -39,7 +28,7 @@ const MODULE_SERVICE_TAG = (() => {
 // never throws, never blocks the notification.
 function writeJournalEntry(entry) {
   try {
-    const journalFile = path.resolve(DATA_DIR, 'notifications-log.json');
+    const journalFile = dataDir('notifications-log.json');
     let data;
     try {
       const raw = existsSync(journalFile) ? readFileSync(journalFile, 'utf8') : '';

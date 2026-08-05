@@ -51,11 +51,9 @@
 // metadata-only and safe to ignore.
 
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { devices } from 'patchright';
 import { cfg } from './config.js';
-
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+import { ROOT_DIR, RUNNER_NAME_RE, platformFile } from './paths.js';
 
 // Resolves a runner through the '#platforms/*' alias in package.json, so the
 // directory is declared once and serves both `import` and the spawned
@@ -67,10 +65,11 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 // 'src/platforms/gog.js', so a call site that spells out the extension can't
 // double it. import.meta.resolve validates the alias, not the target, so a
 // misspelled name still returns a path and surfaces when the runner spawns.
+//
+// platformFile() throws on anything outside 'A-Z' 'a-z' '0-9' '-' — see paths.js for why.
 function platformScript(name) {
-  const file = String(name).replace(/(?:\.js)+$/, '') + '.js';
-  const abs = fileURLToPath(import.meta.resolve(`#platforms/${file}`));
-  return path.relative(REPO_ROOT, abs).split(path.sep).join('/');
+  const file = String(name).replace(/(?:\.js)+$/, '');
+  return path.relative(ROOT_DIR, platformFile(file)).split(path.sep).join('/');
 }
 
 // Read the signed-in Microsoft Rewards user via the dashboard's own
@@ -885,6 +884,10 @@ function normalizeClaimSegment(seg) {
   // the repo root anymore, so the name can only mean a scraper.
   // Left alone: 'echo', './x.sh', '/opt/mine/pre.js', 'gogg' (typo, no .js).
   if (!RUNNER_NAMES.has(name) && !/^[^/]+\.js$/.test(word)) return seg;
+  // Registry ids are A-Za-z0-9- (see paths.js), so 'my_tool.js' and 'a#b.js'
+  // are somebody else's script. Pass them through for the shell to report
+  // instead of letting platformFile() throw in the middle of a run.
+  if (!RUNNER_NAME_RE.test(name)) return seg;
   return `${lead}node ${platformScript(name)}${rest}`;
 }
 

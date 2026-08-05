@@ -832,7 +832,7 @@ export const SITES = [
     name: 'Alienware Arena',
     version: '0.1',
     subtitle: 'Maintains AWA control-center presence, then watches configured Twitch streamers until the daily watch-time target is reached. Sign in once through the Sessions tab.',
-    script: 'alienware-arena.js',
+    script: platformScript('alienware-arena'),
     claimOrder: 12,
     loginUrl: 'https://eu.alienwarearena.com/control-center',
     homeUrl: 'https://eu.alienwarearena.com/control-center',

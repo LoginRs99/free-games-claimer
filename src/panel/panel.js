@@ -2435,7 +2435,7 @@ function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
   console.log(`[${datetime()}] Scheduler (${label}): starting detached run: ${cmd}`);
   runLog.push({ type: 'system', text: `Detached run (${label}) started: ${cmd}`, time: datetime() });
   const child = spawn('bash', ['-c', cmd], {
-    cwd: __panelDirname,
+    cwd: rootDir(),
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });

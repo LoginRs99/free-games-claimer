@@ -13,16 +13,15 @@
 
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { SITES } from './sites.js';
+// dataDir() from paths.js, not from its util.js re-export: importing util.js
+// here closes the cycle app-config.js → util.js → config.js → app-config.js.
+// util.js reads cfg.login_timeout at module scope, so whichever file the cycle
+// re-enters second gets cfg in the TDZ and the process dies at boot with
+// "Cannot access 'cfg' before initialization". paths.js imports nothing local.
+import { dataDir } from './paths.js';
 
-// Compute the data-dir path directly instead of importing dataDir from util.js.
-// util.js itself imports cfg from config.js (for top-level enquirer setup),
-// and config.js is now our caller — importing dataDir from util.js here
-// recreates the cycle and it lands in TDZ when we need it. Resolving the alias
-// directly gives the same anchor with no import, and without depending on how
-// deep this file sits.
-const CONFIG_FILE = path.resolve(fileURLToPath(import.meta.resolve('#dataDir')), 'config.json');
+const CONFIG_FILE = dataDir('config.json');
 
 const toBool = v => v === '1' || v === 'true' || v === true;
 // EG_MOBILE is inverted in the original: absent or truthy → true, only '0'/'false' → false.

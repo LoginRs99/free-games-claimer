@@ -4,6 +4,22 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.2
+
+**Path anchors moved out of util.js into a leaf module ([PR #140](https://github.com/feldorn/free-games-claimer/pull/140) by @mateusfn98).**
+
+`ROOT_DIR` / `DATA_DIR` used to live in `src/util.js`, which itself reads `cfg` from `config.js` at module scope. `src/app-config.js` sits on the `sites.js → config.js` side of the `config.js ↔ util.js` cycle, so it couldn't reach the anchors through util.js without closing the cycle (would land in TDZ mid-boot). It re-implemented the alias resolution by hand.
+
+New `src/paths.js` is a leaf module with no local imports — it exports `ROOT_DIR`, `DATA_DIR`, `dataDir()`, `rootDir()`, and `platformFile()`. Every caller now goes through it (util.js keeps re-exporting `dataDir`/`rootDir` so existing imports still work). `app-config.js` drops its by-hand alias resolution.
+
+`platformFile()` adds a real charset check on the runner name — specifiers parse as URLs, so an unchecked `#` or `?` truncates the path silently (`a#b.js` resolves to `a`). `normalizeClaimSegment()` screens `CLAIM_CMD` words against the same regex — an unrecognized name like `my_tool.js` reaches the shell instead of throwing mid-run.
+
+Also fixes a subtle cleanup: `writeJournalEntry()` (from the v2.11.0 notifications journal) was reaching for the top-level `DATA_DIR` const directly; now goes through `dataDir()` for consistency with everyone else.
+
+Fourth PR from @mateusfn98 (after #136, #138, #139). Refactor-only — no behavior change for anyone.
+
+---
+
 ## What's new in 2.11.1
 
 **Discoveries tab now shows every notify-only watcher's items alongside GamerPower + FGF, with cross-source dedup.**

@@ -16,6 +16,30 @@ const URL_CLAIM = cfg.eg_page_url || 'https://store.epicgames.com/en-US/free-gam
 const URL_LOGIN = 'https://www.epicgames.com/id/login?lang=en-US&noHostRedirect=true&redirectUrl=' + URL_CLAIM;
 const URL_PROMOTIONS = 'https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions?locale=en-US';
 
+// Locale-portable text matchers for Epic's checkout flow. English is
+// the baseline; other locales added as they surface in user reports.
+// Extend a regex here (comma-separated in the pattern group) to add a
+// new locale — both the main claim path and the retry pass consume
+// these constants, so one edit covers both. Steggl's #141 added the
+// German variants (2026-08-06). `i` flag makes each case-insensitive.
+const RX_CONTINUE = /^(Continue|Weiter|Continuer|Continuar|Continua)$/i;
+const RX_YES_BUY_NOW = /Yes,\s*buy\s*now|Ja,\s*jetzt\s*kaufen/i;
+const RX_ACCEPT = /^(Accept|I\s*Accept|Akzeptieren|Ich\s*stimme\s*zu)$/i;
+const RX_EULA = /end\s*user\s*license\s*agreement|Endbenutzer-Lizenzvereinbarung|Endbenutzerlizenzvertrag/i;
+const RX_ADD_LIBRARY = /Add\s*to\s*library|Place\s*Order|Zur\s*Bibliothek\s*hinzufügen|Bestellung\s*abschließen|Jetzt\s*kaufen/i;
+const RX_ORDER_SUCCESS = /Thanks for your order|It.?s all yours|Vielen Dank für.*Bestellung|Bestellung erfolgreich|Alles gehört (dir|Ihnen)/i;
+const RX_CONTINUE_BROWSING = /Continue\s*browsing|Weiter\s*surfen|Weiter\s*shoppen/i;
+const RX_DOWNLOAD_LAUNCHER = /Download\s*Launcher|Launcher\s*herunterladen/i;
+// Locale-portable "already owned" strings. Same table Steggl's OTXO
+// fix uses at the initial CTA check; kept module-scope so both paths
+// can share it.
+const OWNED_TEXTS_GLOBAL = [
+  'in library', 'in der bibliothek', 'en biblioteca', 'en la biblioteca',
+  'dans la bibliothèque', 'in libreria', 'in biblioteca', 'na biblioteca',
+  'w bibliotece', 'kütüphanede', 'ライブラリ内', '라이브러리에 있음',
+  '在库中', '在資料庫中',
+];
+
 log.section(`Epic Games (v${siteVersion('epic-games')})`);
 
 const offerIdMap = {};
@@ -433,26 +457,10 @@ try {
     // an extra roundtrip) and locale variants are matched below; disabled
     // state is the fallback catch-all.
     const btnDisabled = await purchaseBtn.isDisabled().catch(() => false);
-    // Locale variants of "In library" — extend as new markets surface.
-    // Match is startsWith so we don't confuse partial words like "in" in
-    // other contexts. All start with the language's equivalent of "In".
-    const OWNED_TEXTS = [
-      'in library',             // en
-      'in der bibliothek',      // de
-      'en biblioteca',          // es
-      'en la biblioteca',       // es (alt)
-      'dans la bibliothèque',   // fr
-      'in libreria',            // it
-      'in biblioteca',          // it (alt)
-      'na biblioteca',          // pt
-      'w bibliotece',           // pl
-      'kütüphanede',            // tr
-      'ライブラリ内',              // ja
-      '라이브러리에 있음',            // ko
-      '在库中',                    // zh-CN
-      '在資料庫中',                 // zh-TW
-    ];
-    const btnTextIndicatesOwned = OWNED_TEXTS.some(t => btnText === t || btnText.startsWith(t));
+    // v2.11.3: OWNED_TEXTS now module-scoped as OWNED_TEXTS_GLOBAL so the
+    // retry-path race + main race can share the same table. Startsswith
+    // match (not equal) so a trailing space or punctuation doesn't miss.
+    const btnTextIndicatesOwned = OWNED_TEXTS_GLOBAL.some(t => btnText === t || btnText.startsWith(t));
     const isOwnedByButton = btnTextIndicatesOwned || btnDisabled;
 
     // click Continue if 'This game contains mature content recommended only for ages 18+'
@@ -528,7 +536,7 @@ try {
       // variants).
       const recheckText = (await purchaseBtn.innerText().catch(() => btnText)).toLowerCase();
       const recheckDisabled = await purchaseBtn.isDisabled().catch(() => false);
-      const recheckOwned = OWNED_TEXTS.some(t => recheckText === t || recheckText.startsWith(t)) || recheckDisabled;
+      const recheckOwned = OWNED_TEXTS_GLOBAL.some(t => recheckText === t || recheckText.startsWith(t)) || recheckDisabled;
       if (recheckOwned) {
         log.ok(`${title} — already in library (lagged ownership state)`);
         notify_game.status = 'existed';
@@ -542,18 +550,20 @@ try {
       await purchaseBtn.click({ delay: 11 }); // got stuck here without delay (or mouse move), see #75, 1ms was also enough
 
       // click Continue if 'Device not supported. This product is not compatible with your current device.' - avoided by Windows userAgent?
-      page.click('button:has-text("Continue")').catch(_ => { }); // needed since change from Chromium to Firefox?
+      page.locator('button').filter({ hasText: RX_CONTINUE }).first().click().catch(_ => { });
 
       // click 'Yes, buy now' if 'This edition contains something you already have. Still interested?'
-      page.click('button:has-text("Yes, buy now")').catch(_ => { });
+      page.locator('button').filter({ hasText: RX_YES_BUY_NOW }).first().click().catch(_ => { });
 
-      // Accept End User License Agreement (only needed once)
-      page.locator(':has-text("end user license agreement")').waitFor().then(async () => {
+      // Accept End User License Agreement (only needed once). EULA phrasing
+      // varies per locale, so match on the regex above rather than a
+      // literal English string.
+      page.getByText(RX_EULA).first().waitFor().then(async () => {
         log.info('Accepting End User License Agreement');
         if (cfg.debug) console.log(page.innerHTML);
         if (cfg.debug) console.log('Please report the HTML above here: https://github.com/vogler/free-games-claimer/issues/371');
         await page.locator('input#agree').check(); // TODO Bundle: got stuck here; likely unrelated to bundle and locator just changed: https://github.com/vogler/free-games-claimer/issues/371
-        await page.locator('button:has-text("Accept")').click();
+        await page.locator('button').filter({ hasText: RX_ACCEPT }).first().click();
       }).catch(_ => { });
 
       // The whole flow from "wait for purchase iframe" through "Thanks for
@@ -583,7 +593,7 @@ try {
             notify('epic-games: EG_PARENTALPIN not set. Need to enter Parental Control PIN manually.');
           }
           await iframe.locator('input.payment-pin-code__input').first().pressSequentially(cfg.eg_parentalpin);
-          await iframe.locator('button:has-text("Continue")').click({ delay: 11 });
+          await iframe.locator('button').filter({ hasText: RX_CONTINUE }).first().click({ delay: 11 });
         }).catch(_ => { });
 
         if (cfg.debug) await page.pause();
@@ -604,11 +614,14 @@ try {
         // every claim silently timed out because the old selector no
         // longer matched. Accept either text so we stay resilient if Epic
         // flips back or surfaces "Place Order" in some regions/flows.
-        await iframe.locator('button:has-text("Add to library"):not(:has(.payment-loading--loading)), button:has-text("Place Order"):not(:has(.payment-loading--loading))').first().click({ delay: 11 });
+        // Locale variants added for Steggl's #141 followup — German
+        // (Zur Bibliothek hinzufügen / Bestellung abschließen / Jetzt kaufen).
+        // Extend RX_ADD_LIBRARY at the top of this block for other locales.
+        await iframe.locator('button').filter({ hasText: RX_ADD_LIBRARY }).filter({ hasNot: iframe.locator('.payment-loading--loading') }).first().click({ delay: 11 });
 
         // I Agree button is only shown for EU accounts! https://github.com/vogler/free-games-claimer/pull/7#issuecomment-1038964872
-        const btnAgree = iframe.locator('button:has-text("I Accept")');
-        btnAgree.waitFor().then(() => btnAgree.click()).catch(_ => { }); // EU: wait for and click 'I Agree'
+        const btnAgree = iframe.locator('button').filter({ hasText: RX_ACCEPT });
+        btnAgree.waitFor().then(() => btnAgree.first().click()).catch(_ => { }); // EU: wait for and click 'I Agree'
         // context.setDefaultTimeout(100 * 1000); // give time to solve captcha, iframe goes blank after 60s?
         const captcha = iframe.locator('#h_captcha_challenge_checkout_free_prod iframe');
         captcha.waitFor().then(async () => { // don't await, since element may not be shown
@@ -641,13 +654,21 @@ try {
         // independent of modal copy, and the modal's "Continue browsing"
         // button is a stable per-popup identifier even if the heading
         // text changes. Refs #21, #23.
+        // v2.11.3: locale-portable success signals — regex-based text
+        // matchers + disabled-attribute CTA state. Steggl's #141 followup
+        // needed this: the primary claim ran to the Add-to-Library click
+        // in German but the success-race then timed out because the modal
+        // text and the CTA-flip check were still English-only.
         await Promise.race([
-          page.locator('text=/Thanks for your order|It.s all yours/i').first().waitFor({ state: 'attached' }),
-          page.locator('button:has-text("Continue browsing"), button:has-text("Continue Browsing"), button:has-text("Download launcher"), button:has-text("Download Launcher")').first().waitFor({ state: 'visible' }),
-          page.waitForFunction(() => {
+          page.getByText(RX_ORDER_SUCCESS).first().waitFor({ state: 'attached' }),
+          page.locator('button').filter({ hasText: new RegExp(RX_CONTINUE_BROWSING.source + '|' + RX_DOWNLOAD_LAUNCHER.source, 'i') }).first().waitFor({ state: 'visible' }),
+          page.waitForFunction((ownedList) => {
             const btn = document.querySelector('button[data-testid="purchase-cta-button"]');
-            return btn && btn.innerText.trim().toLowerCase() === 'in library';
-          }, { timeout: cfg.timeout }),
+            if (!btn) return false;
+            if (btn.disabled) return true;
+            const txt = (btn.innerText || '').trim().toLowerCase();
+            return ownedList.some(t => txt === t || txt.startsWith(t));
+          }, { timeout: cfg.timeout }, OWNED_TEXTS_GLOBAL),
         ]);
         db.data[user][game_id].status = 'claimed';
         db.data[user][game_id].time = datetime(); // claimed time overwrites failed/dryrun time
@@ -666,8 +687,10 @@ try {
         // 2026-05-14 on Arranger).
         let recoveredViaCta = false;
         try {
-          const cta = (await page.locator('button[data-testid="purchase-cta-button"]').first().innerText().catch(() => '')).toLowerCase();
-          if (cta === 'in library') recoveredViaCta = true;
+          const ctaLoc = page.locator('button[data-testid="purchase-cta-button"]').first();
+          const cta = (await ctaLoc.innerText().catch(() => '')).toLowerCase();
+          const ctaDisabled = await ctaLoc.isDisabled().catch(() => false);
+          if (OWNED_TEXTS_GLOBAL.some(t => cta === t || cta.startsWith(t)) || ctaDisabled) recoveredViaCta = true;
         } catch { /* CTA probe is best-effort */ }
         if (recoveredViaCta) {
           log.ok(`${title} — claim succeeded (confirmed via post-click CTA)`);
@@ -768,13 +791,21 @@ try {
         // Same three-signal race as the main claim path above — see the
         // fuller comment there. Modal-text + popup-buttons + CTA-flip,
         // whichever fires first wins.
+        // v2.11.3: locale-portable success signals — regex-based text
+        // matchers + disabled-attribute CTA state. Steggl's #141 followup
+        // needed this: the primary claim ran to the Add-to-Library click
+        // in German but the success-race then timed out because the modal
+        // text and the CTA-flip check were still English-only.
         await Promise.race([
-          page.locator('text=/Thanks for your order|It.s all yours/i').first().waitFor({ state: 'attached' }),
-          page.locator('button:has-text("Continue browsing"), button:has-text("Continue Browsing"), button:has-text("Download launcher"), button:has-text("Download Launcher")').first().waitFor({ state: 'visible' }),
-          page.waitForFunction(() => {
+          page.getByText(RX_ORDER_SUCCESS).first().waitFor({ state: 'attached' }),
+          page.locator('button').filter({ hasText: new RegExp(RX_CONTINUE_BROWSING.source + '|' + RX_DOWNLOAD_LAUNCHER.source, 'i') }).first().waitFor({ state: 'visible' }),
+          page.waitForFunction((ownedList) => {
             const btn = document.querySelector('button[data-testid="purchase-cta-button"]');
-            return btn && btn.innerText.trim().toLowerCase() === 'in library';
-          }, { timeout: cfg.timeout }),
+            if (!btn) return false;
+            if (btn.disabled) return true;
+            const txt = (btn.innerText || '').trim().toLowerCase();
+            return ownedList.some(t => txt === t || txt.startsWith(t));
+          }, { timeout: cfg.timeout }, OWNED_TEXTS_GLOBAL),
         ]);
         const game_id = page.url().split('/').pop();
         db.data[user][game_id].status = 'claimed';

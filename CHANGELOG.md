@@ -4,6 +4,27 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.3
+
+**Epic Games full-flow locale portability — Steggl's [#141](https://github.com/feldorn/free-games-claimer/issues/141) followup.**
+
+v2.11.1 fixed the initial "already owned" check for non-English browsers by adding the button's `disabled` attribute as a structural signal + a locale-variant text table. That got OTXO past the CTA click on Steggl's German setup — but Sol Cesto then stalled 180s on the **next** step. Epic's checkout modal cascades through 5+ button clicks after the CTA, and all of those were English-only:
+
+- "Continue" (Device not supported gate)
+- "Yes, buy now" (edition-conflict gate)
+- "Accept" / "I Accept" (EULA + EU consent)
+- "Add to Library" / "Place Order" (the main checkout button — this is where Sol Cesto stalled, German "Zur Bibliothek hinzufügen")
+- "Continue browsing" / "Download launcher" (success modal)
+- Success text "Thanks for your order" / "It's all yours" (success race)
+
+All of these now go through regex-based `hasText` matchers with English + German variants (plus opportunistic French / Spanish / Italian / Portuguese / Polish / Turkish / Japanese / Korean / Chinese where documented). The `OWNED_TEXTS` table and `RX_*` variant tables are hoisted to module scope so both the main claim path and the retry pass share them.
+
+Additionally, the `disabled` attribute now short-circuits the success race — if the CTA button flips to disabled AT ALL, that's a locale-portable "claim succeeded" signal even when the modal text race misses.
+
+**Backward compatible.** English users see zero change. Every other locale gets partial-to-full coverage; if a new locale surfaces in an issue, one regex edit at the top of `src/platforms/epic-games.js` covers it (extend the `RX_*` groups + the `OWNED_TEXTS_GLOBAL` array).
+
+---
+
 ## What's new in 2.11.2
 
 **Path anchors moved out of util.js into a leaf module ([PR #140](https://github.com/feldorn/free-games-claimer/pull/140) by @mateusfn98).**

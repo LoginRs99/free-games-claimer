@@ -97,7 +97,12 @@ const newEntries = [];
 const current = {};
 
 for (const [pid, info] of products) {
-  current[pid] = { ...info, firstSeen: prev.products[pid]?.firstSeen || datetime() };
+  // Ubisoft's product-tile metadata doesn't expose a canonical product
+  // URL, so we store the storefront landing page. The Discoveries tab
+  // uses this to make each row clickable; without it the panel link
+  // was empty. Historical entries with url:null get retro-populated on
+  // the next run since we overwrite `current[pid]` here.
+  current[pid] = { ...info, url: URL_FREE, firstSeen: prev.products[pid]?.firstSeen || datetime() };
   if (!prev.products[pid]) {
     newEntries.push({ pid, ...info });
   }

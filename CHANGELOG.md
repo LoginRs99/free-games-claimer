@@ -4,6 +4,29 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.1
+
+**Discoveries tab now shows every notify-only watcher's items alongside GamerPower + FGF, with cross-source dedup.**
+
+Prior to this release, the Discoveries tab surfaced only GamerPower + r/FreeGameFindings entries. Notify-only watchers (IndieGala, PSN, Xbox, Fanatical, Humble Bundle, Lenovo Gaming Key Drops, Ubisoft) fired apprise pushes but were invisible in the panel. That was a design gap — the whole point of the Discoveries tab is to be the one place fgc reports every item it has found.
+
+**What changed:**
+
+- New `src/discoveries.js` module reads every `data/*-watch.json` state file and folds the tracked products into the same aggregation pipeline as GamerPower + FGF entries.
+- Cross-source dedup with priority: **direct watchers (IndieGala/PSN/Xbox/Fanatical/Humble/Lenovo/Ubisoft) > GamerPower > FGF**. If the same game is reported by multiple sources, one row shows the direct-storefront claim URL, and secondary sources get small "+GP" / "+FGF" pills for provenance.
+- Every source has its own bucket in `/api/discoveries` — GamerPower, FGF, plus one per watcher.
+- Meta line shows counts per source: `Fetched 10:30:12 · GamerPower: 17 · FGF: 8 · IndieGala: 6 · Xbox: 13 · Showing 30 of 44`.
+- Row rendering: watcher-sourced items show `first seen YYYY-MM-DD` metadata instead of the GamerPower/FGF-specific "worth" / "upvotes" lines.
+- Coverage badges added for the newly-recognized collectors: `psn`, `xbox`, `fanatical`, `humble-bundle`, `lenovo-gaming` all render as `NOTIFY` with an appropriate label.
+
+**Impact:** the Discoveries tab is now the actual "everything fgc has found" view it was always intended to be. Notification-journal (v2.11.0) tells you *what pinged you*; Discoveries tells you *what fgc has visibility on* — those two views together, plus the Alerts summary, give you complete situational awareness without SSH-ing to a container.
+
+**No config changes required.** Existing user-state markers (ignore / mark manually-claimed) still work — the dedup keys are stable across the retrofit.
+
+**No new env vars.** No new opt-ins. Purely a rendering + aggregation change.
+
+---
+
 ## What's new in 2.11.0
 
 **Batch feature release — 3 new notify-only watchers, Prime→Steam auto-redeem, opt-in CAPTCHA helper, Steam Points Shop weekly item, pause/resume scheduler, plus MS Rewards resilience fixes. Ships on top of the [PR #139](https://github.com/feldorn/free-games-claimer/pull/139) repository reorganisation.**

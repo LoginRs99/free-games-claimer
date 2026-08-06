@@ -57,7 +57,9 @@ for (const e of entries) {
   if (!id || !name) continue;
   const url = e.open_giveaway_url || e.gamerpower_url || 'https://www.gamerpower.com/';
   const note = (e.platforms || 'xbox').split(',')[0].trim();
-  if (!products.has(id)) products.set(id, { name, url, note });
+  // Preserve endDate + worth from GamerPower for expiry/price signals on
+  // the Discoveries tab.
+  if (!products.has(id)) products.set(id, { name, url, note, endDate: e.end_date || null, worth: e.worth || null });
 }
 
 log.status('Free Xbox items on page', products.size);

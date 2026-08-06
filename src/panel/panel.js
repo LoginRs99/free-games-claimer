@@ -9,6 +9,7 @@ import { describeConfig, patchConfig, describeEnv, getSchedulerConfig, CONFIG_FI
 import { SITES as SITE_REGISTRY, getLoginSitesById, getClaimScriptOrder, getLinkedActiveMap, getClaimDbFiles, getServiceRows, normalizeClaimCommand } from '#src/sites.js';
 import { fetchGamerPowerGiveaways, filterFor as filterGpFor, COLLECTOR_PATTERNS as GP_COLLECTOR_PATTERNS, GP_TITLE_HINTS } from '#src/gamerpower.js';
 import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfCleanTitle, COLLECTOR_TITLE_PATTERNS as FGF_COLLECTOR_PATTERNS } from '#src/freegamefindings.js';
+import { WATCHER_SOURCES, SOURCE_PRIORITY, loadAllWatcherProducts } from '#src/discoveries.js';
 import { pollGithubReplies, getWatchState as getGithubWatchState, markIssueRead as markGithubIssueRead } from '#src/github-watch.js';
 
 const PANEL_PORT = Number(process.env.PANEL_PORT) || 7080;
@@ -3759,6 +3760,8 @@ const PANEL_HTML = `<!DOCTYPE html>
   .disc-badge.skip    { background: #3d1f24; color: #ff9a8c; border: 1px solid #6b3338; }
   .disc-badge.manual  { background: #2a2540; color: #b3a0e0; border: 1px solid #463a6a; }
   .disc-badge.ignored { background: #232838; color: #7a8aa0; border: 1px solid #3a4860; }
+  .disc-badge.expired { background: #2a1f1f; color: #a89890; border: 1px solid #4a3838; }
+  .disc-item.expired-item { opacity: 0.7; }
   .disc-item-meta-bad { color: #ff9a8c; font-weight: 600; }
   .disc-tag { font-size: 10px; padding: 3px 6px; border-radius: 3px; background: #1c2c4a; color: #a0b4d4; font-family: 'SF Mono', Menlo, monospace; }
   .disc-coverage-label { font-size: 11px; color: #8aa0c2; font-style: italic; }
@@ -4083,7 +4086,7 @@ const PANEL_HTML = `<!DOCTYPE html>
       <button class="tab active" data-tab="sessions" onclick="switchTab('sessions')">Sessions</button>
       <button class="tab" data-tab="stats" onclick="switchTab('stats')">Stats</button>
       <button class="tab" data-tab="schedule" onclick="switchTab('schedule')">Schedule</button>
-      <button class="tab" data-tab="discoveries" onclick="switchTab('discoveries')" title="Free-game listings from gamerpower.com and r/FreeGameFindings — click any link to claim manually">Discoveries</button>
+      <button class="tab" data-tab="discoveries" onclick="switchTab('discoveries')" title="Everything fgc has visibility on — direct storefront watchers (IndieGala/PSN/Xbox/Fanatical/Humble/Lenovo/Ubisoft) plus community aggregators (gamerpower.com + r/FreeGameFindings), cross-source deduped">Discoveries</button>
       <button class="tab" data-tab="logs" onclick="switchTab('logs')">Logs</button>
       <button class="tab" data-tab="diagnostics" onclick="switchTab('diagnostics')" title="Outstanding items that need your attention — pending code redemptions, stale sessions, unshared errors, new items to review in Discoveries.">Alerts</button>
       <button class="tab" data-tab="settings" onclick="switchTab('settings')">Settings</button>
@@ -4171,7 +4174,7 @@ const PANEL_HTML = `<!DOCTYPE html>
     <div class="disc-head">
       <div>
         <h3>Discoveries</h3>
-        <div class="disc-sub">Free-game listings from <a href="https://www.gamerpower.com/" onclick="return openSiteUrl(this)" target="_blank" rel="noopener">gamerpower.com</a> and <a href="https://www.reddit.com/r/FreeGameFindings/" onclick="return openSiteUrl(this)" target="_blank" rel="noopener">r/FreeGameFindings</a>, grouped by storefront. <b>AUTO</b>/<b>SKIP</b>/<b>NOTIFY</b>/<b>MANUAL</b>/<b>CLAIMED</b> badges tell you what the next run will do. Hover a row's 🚫 or ✓ to dismiss or mark as manually-claimed; ↺ undoes.</div>
+        <div class="disc-sub">Everything fgc has visibility on — direct storefront watchers (IndieGala, PSN, Xbox, Fanatical, Humble, Lenovo, Ubisoft) alongside community aggregators (<a href="https://www.gamerpower.com/" onclick="return openSiteUrl(this)" target="_blank" rel="noopener">gamerpower.com</a>, <a href="https://www.reddit.com/r/FreeGameFindings/" onclick="return openSiteUrl(this)" target="_blank" rel="noopener">r/FreeGameFindings</a>), cross-source deduped so each game appears once with primary-source URL + "+" pills showing where else it was found. <b>AUTO</b>/<b>SKIP</b>/<b>NOTIFY</b>/<b>MANUAL</b>/<b>CLAIMED</b>/<b>EXPIRED</b> badges tell you what the next run will do. Hover a row's 🚫 or ✓ to dismiss or mark as manually-claimed; ↺ undoes.</div>
       </div>
       <button class="disc-refresh-btn" id="btnDiscRefresh" onclick="renderDiscoveriesTab(true)">Refresh</button>
     </div>
@@ -4191,6 +4194,7 @@ const PANEL_HTML = `<!DOCTYPE html>
       <label class="disc-filter-label"><input type="checkbox" id="discHideClaimed" checked onchange="onDiscFilterChange()"> Hide claimed</label>
       <label class="disc-filter-label" title="Hides both items you dismissed (🚫) and items the SKIP forecast says your settings will filter at run time."><input type="checkbox" id="discHideIgnored" checked onchange="onDiscFilterChange()"> Hide ignored / skipped</label>
       <label class="disc-filter-label" title="Hides in-game cosmetics and DLC (outfits, skins, packs, currency, GPU/points rewards) — these aren't standalone free games. Matches the title against a keyword list."><input type="checkbox" id="discHideRewards" checked onchange="onDiscFilterChange()"> Hide rewards / DLC</label>
+      <label class="disc-filter-label" title="Hides items whose end date is in the past. Aggregators sometimes take a day or two to remove ended promos — this checkbox drops them from view without ignoring them permanently."><input type="checkbox" id="discHideExpired" checked onchange="onDiscFilterChange()"> Hide expired</label>
       <span class="disc-filter-spacer"></span>
       <span class="disc-filter-hint" id="discHiddenHint"></span>
     </div>
@@ -4538,11 +4542,13 @@ function discLoadFilters() {
     const hideClaimed = document.getElementById('discHideClaimed');
     const hideIgnored = document.getElementById('discHideIgnored');
     const hideRewards = document.getElementById('discHideRewards');
+    const hideExpired = document.getElementById('discHideExpired');
     if (search && typeof s.search === 'string') search.value = s.search;
     if (minPrice && typeof s.minPrice === 'number') minPrice.value = String(s.minPrice);
     if (hideClaimed && typeof s.hideClaimed === 'boolean') hideClaimed.checked = s.hideClaimed;
     if (hideIgnored && typeof s.hideIgnored === 'boolean') hideIgnored.checked = s.hideIgnored;
     if (hideRewards && typeof s.hideRewards === 'boolean') hideRewards.checked = s.hideRewards;
+    if (hideExpired && typeof s.hideExpired === 'boolean') hideExpired.checked = s.hideExpired;
     if (typeof s.activeTab === 'string') discActiveTab = s.activeTab;
   } catch {}
 }
@@ -4554,6 +4560,7 @@ function discSaveFilters() {
       hideClaimed: !!document.getElementById('discHideClaimed')?.checked,
       hideIgnored: !!document.getElementById('discHideIgnored')?.checked,
       hideRewards: !!document.getElementById('discHideRewards')?.checked,
+      hideExpired: !!document.getElementById('discHideExpired')?.checked,
       activeTab: discActiveTab,
     };
     localStorage.setItem('discFilters', JSON.stringify(s));
@@ -4654,6 +4661,9 @@ function discPassesFilters(it, filters) {
   if (filters.hideRewards && discIsReward(it) && !(it.userState && it.userState.status === 'manually-claimed')) {
     return { pass: false, reason: 'reward' };
   }
+  // Expired items — filter when the box is checked. State is set
+  // server-side by forecastExpired; the badge already reads EXPIRED.
+  if (filters.hideExpired && it.coverage.state === 'expired') return { pass: false, reason: 'expired' };
   return { pass: true };
 }
 
@@ -4664,6 +4674,7 @@ function discReadFilters() {
     hideClaimed: !!document.getElementById('discHideClaimed')?.checked,
     hideIgnored: !!document.getElementById('discHideIgnored')?.checked,
     hideRewards: !!document.getElementById('discHideRewards')?.checked,
+    hideExpired: !!document.getElementById('discHideExpired')?.checked,
   };
 }
 
@@ -4674,12 +4685,21 @@ function discApplyAndRender() {
   const hint = document.getElementById('discHiddenHint');
   if (!body || !discCache) return;
   const filters = discReadFilters();
-  // Flatten and tag every item with sourceKey for rendering.
+  // Flatten every source bucket. GP + FGF keep their short codes for
+  // backward compat; watcher sources use their source name directly.
   const all = [];
-  for (const it of (discCache.sources.gamerpower.items || [])) all.push({ ...it, sourceKey: 'gp' });
-  for (const it of (discCache.sources.freegamefindings.items || [])) all.push({ ...it, sourceKey: 'fgf' });
+  for (const it of (discCache.sources.gamerpower && discCache.sources.gamerpower.items || [])) all.push({ ...it, sourceKey: 'gp' });
+  for (const it of (discCache.sources.freegamefindings && discCache.sources.freegamefindings.items || [])) all.push({ ...it, sourceKey: 'fgf' });
+  // Watcher sources — every non-aggregator bucket in the response. Read
+  // whatever the server sent rather than hardcoding names so a future
+  // watcher addition works without a client-side change.
+  for (const [source, bucket] of Object.entries(discCache.sources || {})) {
+    if (source === 'gamerpower' || source === 'freegamefindings') continue;
+    if (!bucket || !Array.isArray(bucket.items)) continue;
+    for (const it of bucket.items) all.push({ ...it, sourceKey: source });
+  }
   // Apply filters. Track hidden counts for the hint line.
-  const hiddenCounts = { search: 0, price: 0, claimed: 0, ignored: 0 };
+  const hiddenCounts = { search: 0, price: 0, claimed: 0, ignored: 0, reward: 0, expired: 0 };
   const visible = [];
   for (const it of all) {
     const r = discPassesFilters(it, filters);
@@ -4718,10 +4738,28 @@ function discApplyAndRender() {
   // Render meta + hidden hint.
   if (meta) {
     const when = new Date(discCache.fetchedAt);
-    meta.innerHTML = 'Fetched ' + escapeHtml(when.toLocaleTimeString()) +
-      ' · GamerPower: ' + discCache.sources.gamerpower.total +
-      ' · FreeGameFindings: ' + discCache.sources.freegamefindings.total +
-      ' · Showing ' + visible.length + ' of ' + all.length;
+    // Compact source labels for the meta line. GP/FGF are aggregators,
+    // watcher buckets get named. Buckets with 0 items are hidden so
+    // the meta doesn't get long on quiet days.
+    const parts = ['Fetched ' + escapeHtml(when.toLocaleTimeString())];
+    const sourceLabels = {
+      gamerpower: 'GamerPower',
+      freegamefindings: 'FGF',
+      indiegala: 'IndieGala',
+      psn: 'PSN',
+      xbox: 'Xbox',
+      fanatical: 'Fanatical',
+      'humble-bundle': 'Humble',
+      'lenovo-gaming': 'Lenovo',
+      ubisoft: 'Ubisoft',
+    };
+    for (const [source, bucket] of Object.entries(discCache.sources || {})) {
+      const total = (bucket && bucket.total) || 0;
+      if (total === 0) continue;
+      parts.push((sourceLabels[source] || source) + ': ' + total);
+    }
+    parts.push('Showing ' + visible.length + ' of ' + all.length);
+    meta.innerHTML = parts.join(' · ');
   }
   if (hint) {
     const hidden = all.length - visible.length;
@@ -4739,7 +4777,7 @@ function discApplyAndRender() {
   }
   // Sort within tab: MANUAL → NOTIFY → SKIP → AUTO → CLAIMED → IGNORED,
   // then by collector key, then alpha.
-  const stateOrder = { manual: 0, notify: 1, skip: 2, auto: 3, claimed: 4, ignored: 5 };
+  const stateOrder = { manual: 0, notify: 1, skip: 2, auto: 3, claimed: 4, ignored: 5, expired: 6 };
   const sorted = tabItems.slice().sort((a, b) => {
     const sa = stateOrder[a.coverage.state] ?? 9;
     const sb = stateOrder[b.coverage.state] ?? 9;
@@ -4763,19 +4801,37 @@ function discRenderItem(it) {
   // name in this list gets a red highlight in the meta line below so
   // the user can see *which* setting caused the skip.
   const flaggedFields = new Set(it.coverage.skipFields || []);
-  // Source pill (GP / FGF). Storefront chip moved to row meta-line.
-  const sourcePill = sourceKey === 'fgf' ? 'FGF' : 'GP';
+  // Source pill — primary source label + optional "also on X" secondaries.
+  // Watcher sources use their full name; aggregators shorten to GP/FGF.
+  const sourceLabelMap = {
+    gp: 'GP', fgf: 'FGF',
+    indiegala: 'IndieGala', psn: 'PSN', xbox: 'Xbox',
+    fanatical: 'Fanatical', 'humble-bundle': 'Humble',
+    'lenovo-gaming': 'Lenovo', ubisoft: 'Ubisoft',
+  };
+  const sourcePillLabel = sourceLabelMap[sourceKey] || sourceKey || 'GP';
+  const alsoOnMap = { gamerpower: 'GP', freegamefindings: 'FGF' };
+  const alsoOnPills = Array.isArray(it.alsoOn) && it.alsoOn.length
+    ? it.alsoOn.map(s => '<span class="disc-tag" title="Also reported by ' + escapeHtml(s) + '">+' + escapeHtml(alsoOnMap[s] || sourceLabelMap[s] || s) + '</span>').join('')
+    : '';
+  const sourcePill = sourcePillLabel + alsoOnPills;
   // Tag chip — FGF bracketed prefix or GamerPower platform list.
-  const chip = sourceKey === 'fgf'
-    ? (it.tag || 'unknown')
-    : (it.platforms || '');
+  // Watcher-sourced items don't carry these; skip chip for them.
+  const isAggregator = sourceKey === 'gp' || sourceKey === 'fgf';
+  const chip = isAggregator ? (sourceKey === 'fgf' ? (it.tag || 'unknown') : (it.platforms || '')) : '';
   const metaParts = [];
   if (sourceKey === 'fgf') {
     if (typeof it.score === 'number') metaParts.push(it.score + ' upvotes');
     if (it.flair) metaParts.push(escapeHtml(it.flair));
-  } else {
+  } else if (sourceKey === 'gp') {
     if (it.type) metaParts.push(escapeHtml(it.type));
     if (it.endDate && it.endDate !== 'N/A') metaParts.push('ends ' + escapeHtml(it.endDate));
+  } else {
+    // Watcher-sourced items: firstSeen timestamp + endDate (when set,
+    // primarily PSN/Xbox which preserve GamerPower's end_date).
+    if (it.firstSeen) metaParts.push('first seen ' + escapeHtml(String(it.firstSeen).slice(0, 10)));
+    if (it.endDate && it.endDate !== 'N/A') metaParts.push('ends ' + escapeHtml(String(it.endDate).slice(0, 10)));
+    if (it.note) metaParts.push(escapeHtml(String(it.note)));
   }
   if (it.worth && it.worth !== 'N/A' && it.worth !== '$0.00') {
     const worthStr = 'worth ' + escapeHtml(it.worth);
@@ -4804,10 +4860,11 @@ function discRenderItem(it) {
       '<button class="disc-action-btn danger" title="Ignore — dismiss this row" data-disc-act="mark" data-key="' + keyAttr + '" data-status="ignored" data-title="' + titleAttr + '">🚫</button>';
   }
   const dimmed = it.userState ? ' user-marked' : '';
-  return '<div class="disc-item' + dimmed + '" title="' + escapeHtml(it.coverage.label || '') + '">' +
+  const expiredClass = it.coverage.state === 'expired' ? ' expired-item' : '';
+  return '<div class="disc-item' + dimmed + expiredClass + '" title="' + escapeHtml(it.coverage.label || '') + '">' +
     '<span class="disc-badge ' + state + '">' + stateLabel + '</span>' +
     '<div>' +
-      '<div><a href="' + escapeHtml(it.url) + '" onclick="return openSiteUrl(this)" target="_blank" rel="noopener">' + escapeHtml(it.title) + '</a> <span class="disc-tag" title="source">' + sourcePill + '</span></div>' +
+      '<div><a href="' + escapeHtml(it.url) + '" onclick="return openSiteUrl(this)" target="_blank" rel="noopener">' + escapeHtml(it.title) + '</a> <span class="disc-tag" title="Primary source">' + escapeHtml(sourcePillLabel) + '</span>' + alsoOnPills + '</div>' +
       '<div class="disc-coverage-label">' + escapeHtml(it.coverage.label || '') + '</div>' +
     '</div>' +
     '<div style="display:flex; align-items:center; gap:8px; justify-content:flex-end;">' +
@@ -5569,14 +5626,21 @@ async function discUnmarkItem(key) {
 
 // Mutate discCache so all items with the given dedupKey get the new
 // userState + matching coverage. A single game often appears in BOTH
-// GP and FGF, sharing one dedupKey — they MUST flip together so the
-// optimistic local view matches what the server would return on a
-// refresh. Returns an array of previous values (one per mutated item)
-// for revert on POST failure. A status of null clears user-state (undo).
+// GP and FGF (or in a watcher plus one of the aggregators), sharing
+// one dedupKey — they MUST flip together so the optimistic local view
+// matches what the server would return on a refresh. v2.11.1: this
+// used to iterate only over ['gamerpower', 'freegamefindings'], which
+// meant clicking Ignore on a watcher-sourced item (IndieGala / PSN /
+// Xbox / Fanatical / Humble / Lenovo / Ubisoft) had zero visible
+// effect until refresh — server wrote it, client re-render skipped
+// the row. Now walks every source bucket present in the response.
+// Returns an array of previous values (one per mutated item) for
+// revert on POST failure. A status of null clears user-state (undo).
 function discApplyUserStateLocally(key, status, title, restoreList) {
   const mutated = [];
   let restoreIdx = 0;
-  for (const src of ['gamerpower', 'freegamefindings']) {
+  const sourceKeys = discCache?.sources ? Object.keys(discCache.sources) : [];
+  for (const src of sourceKeys) {
     const items = discCache?.sources?.[src]?.items;
     if (!Array.isArray(items)) continue;
     for (const it of items) {
@@ -9126,10 +9190,15 @@ const server = http.createServer(async (req, res) => {
           case 'steam':             return { state: 'auto',   label: 'Auto-claimed by Steam collector' };
           case 'gog':               return { state: 'notify', label: 'Notify-only — claim manually via the link (GOG claim UIs vary)' };
           case 'itch-io':           return { state: 'manual', label: 'Itch.io — claim manually via the link' };
-          case 'indiegala':         return { state: 'manual', label: 'IndieGala — claim manually via the link' };
+          case 'indiegala':         return { state: 'notify', label: 'IndieGala watcher tracks these — claim manually via the link when the watcher pings' };
           case 'stove':             return { state: 'manual', label: 'STOVE storefront — claim manually via the link' };
           case 'prime-gaming':      return { state: 'manual', label: 'Prime collector handles discovery directly — listed here for awareness' };
-          case 'ubisoft':           return { state: 'manual', label: 'Ubisoft watcher handles discovery directly — listed here for awareness' };
+          case 'ubisoft':           return { state: 'notify', label: 'Ubisoft watcher tracks these — claim manually on Ubisoft Connect when notified' };
+          case 'psn':               return { state: 'notify', label: 'PSN watcher tracks these — claim manually on your PlayStation when notified (Sony anti-bot prevents auto-claim)' };
+          case 'xbox':              return { state: 'notify', label: 'Xbox watcher tracks these — claim manually on your Xbox / Xbox app when notified' };
+          case 'fanatical':         return { state: 'notify', label: 'Fanatical watcher tracks these — claim manually via the link when the watcher pings' };
+          case 'humble-bundle':     return { state: 'notify', label: 'Humble Bundle watcher tracks these — claim manually via the link when the watcher pings' };
+          case 'lenovo-gaming':     return { state: 'notify', label: 'Lenovo Legion drop tracker — first-come-first-served, watch for the at-drop-time push' };
           case 'mobile':            return { state: 'manual', label: 'Mobile platform — claim via the App Store / Play Store' };
           case 'console':           return { state: 'manual', label: 'Console giveaway — claim through the platform store on your console' };
           case 'vr':                return { state: 'manual', label: 'VR-platform giveaway — claim through the VR storefront' };
@@ -9215,6 +9284,24 @@ const server = http.createServer(async (req, res) => {
       // here we forecast off the title alone, which GamerPower is
       // consistent about ("… Key Giveaway" == third-party). Report
       // 2026-07-19: Dwarven Realms badged AUTO, actually manual.
+      // v2.11.1: EXPIRED forecast — flags rows whose endDate is in the
+      // past. Fires after every other forecast so a claimed/skipped
+      // status takes precedence (an already-owned expired title still
+      // reads CLAIMED, not EXPIRED). Ignored/manually-claimed states
+      // are handled later in promoteUserState and are unaffected.
+      const forecastExpired = (coverage, endDate) => {
+        if (!endDate || endDate === 'N/A') return coverage;
+        const t = Date.parse(String(endDate).replace(' ', 'T'));
+        if (!Number.isFinite(t) || t >= Date.now()) return coverage;
+        // Only override neutral/auto states — don't overwrite claimed.
+        if (coverage.state === 'claimed' || coverage.state === 'ignored') return coverage;
+        return {
+          state: 'expired',
+          label: 'This offer ended ' + String(endDate).slice(0, 10) + '. The source may not have removed it yet — safe to ignore or wait for the aggregator to prune.',
+          expired: true,
+        };
+      };
+
       const forecastManualKeyGiveaway = (coverage, collectorKey, title) => {
         if (coverage.state !== 'auto' || collectorKey !== 'steam') return coverage;
         if (!/\bKey Giveaway\b/i.test(String(title || ''))) return coverage;
@@ -9291,6 +9378,7 @@ const server = http.createServer(async (req, res) => {
         coverage = promoteIfOwned(coverage, collectorKey, p.url, title);
         coverage = forecastSkip(coverage, collectorKey, worth);
         coverage = forecastManualKeyGiveaway(coverage, collectorKey, p.title);
+        // FGF entries don't carry endDate — forecastExpired is a no-op for them.
         // "ReadComments" flair class = key is randomly distributed in the
         // Reddit comments thread, not on the external page. The post.url
         // points at the redeem endpoint (e.g. nvidia.com/redeem) which is
@@ -9355,6 +9443,7 @@ const server = http.createServer(async (req, res) => {
         coverage = promoteIfOwned(coverage, collectorKey, e.open_giveaway_url || '', titleForMatch);
         coverage = forecastSkip(coverage, collectorKey, e.worth);
         coverage = forecastManualKeyGiveaway(coverage, collectorKey, e.title);
+        coverage = forecastExpired(coverage, e.end_date);
         const dedupKey = buildKey(collectorKey, titleForMatch);
         const promoted = promoteUserState(coverage, dedupKey);
         return {
@@ -9376,6 +9465,87 @@ const server = http.createServer(async (req, res) => {
         };
       });
 
+      // v2.11.1: fold in every notify-only watcher's tracked products so
+      // the Discoveries tab surfaces the SAME items the watchers ping
+      // apprise about. Prior versions had watchers write to their own
+      // state files invisibly; now they contribute to the unified view.
+      // Reads all data/*-watch.json files (Ubisoft, IndieGala, PSN,
+      // Xbox, Fanatical, Humble, Lenovo) and transforms each product
+      // into a Discovery item using the same pipeline as GamerPower /
+      // FGF entries (coverage → skip forecast → user-state promotion).
+      const watcherProducts = loadAllWatcherProducts();
+      const watcherItemsBySource = {};
+      for (const w of WATCHER_SOURCES) watcherItemsBySource[w.source] = [];
+      for (const p of watcherProducts) {
+        const collectorKey = p.collectorKey;
+        let coverage = coverageFor(collectorKey);
+        coverage = promoteIfOwned(coverage, collectorKey, p.url, p.title);
+        // Inherit worth from GamerPower if the same title is priced
+        // over there. Fanatical / Humble Steam-key giveaways match GP's
+        // "$X worth" entries frequently enough that this is worth doing.
+        // Worth inheritance: prefer the watcher's own worth (from GamerPower
+        // via PSN/Xbox watchers) if present, else look up from the
+        // aggregator index built above.
+        const worth = p.worth || priceByKey.get(matchKey(p.title)) || null;
+        coverage = forecastSkip(coverage, collectorKey, worth);
+        coverage = forecastExpired(coverage, p.endDate);
+        const dedupKey = buildKey(collectorKey, p.title);
+        const promoted = promoteUserState(coverage, dedupKey);
+        watcherItemsBySource[p.source].push({
+          title: p.title,
+          url: p.url,
+          note: p.note,
+          firstSeen: p.firstSeen,
+          endDate: p.endDate,
+          worth,
+          collectorKey,
+          dedupKey,
+          userState: promoted.userState,
+          coverage: promoted.coverage,
+        });
+      }
+
+      // Cross-source dedup. Build a { dedupKey → [{source, item}] } map
+      // across ALL sources (GP, FGF, and every watcher), then for each
+      // key pick the primary by SOURCE_PRIORITY (lower priority-integer
+      // wins — direct-source watchers > aggregators). The primary keeps
+      // its item; secondary sources contribute their names to
+      // `item.alsoOn` (rendered as small "also on X" pills in the
+      // panel), and their entries are dropped from their own bucket so
+      // no visible duplication remains.
+      const dedupIndex = new Map();
+      const registerForDedup = (source, itemsArr) => {
+        for (const it of itemsArr) {
+          const key = it.dedupKey;
+          if (!key) continue;
+          if (!dedupIndex.has(key)) dedupIndex.set(key, []);
+          dedupIndex.get(key).push({ source, item: it });
+        }
+      };
+      registerForDedup('gamerpower', gpItems);
+      registerForDedup('freegamefindings', fgfItems);
+      for (const [source, items] of Object.entries(watcherItemsBySource)) registerForDedup(source, items);
+      // For every dup group (2+ sources): pick primary, drop others.
+      // The dropped items are removed from their own bucket by index —
+      // we identify them by object identity, not just dedupKey.
+      const droppedFromBucket = { gamerpower: new Set(), freegamefindings: new Set() };
+      for (const w of WATCHER_SOURCES) droppedFromBucket[w.source] = new Set();
+      for (const [key, hits] of dedupIndex.entries()) {
+        if (hits.length < 2) continue;
+        hits.sort((a, b) => (SOURCE_PRIORITY[a.source] ?? 99) - (SOURCE_PRIORITY[b.source] ?? 99));
+        const primary = hits[0];
+        const secondaries = hits.slice(1);
+        primary.item.alsoOn = secondaries.map(s => s.source);
+        for (const s of secondaries) droppedFromBucket[s.source].add(s.item);
+      }
+      // Filter each bucket to drop the dedup-losers.
+      const filterBucket = (arr, source) => arr.filter(it => !droppedFromBucket[source].has(it));
+      const gpItemsFinal = filterBucket(gpItems, 'gamerpower');
+      const fgfItemsFinal = filterBucket(fgfItems, 'freegamefindings');
+      for (const source of Object.keys(watcherItemsBySource)) {
+        watcherItemsBySource[source] = filterBucket(watcherItemsBySource[source], source);
+      }
+
       // Auto-prune: drop user-state entries older than 14d that are no
       // longer present in either aggregator feed. Safety net so the
       // state file doesn't grow unbounded over years. Entries still in
@@ -9383,7 +9553,9 @@ const server = http.createServer(async (req, res) => {
       // this and want it to stay hidden" markers, valuable on long-
       // running giveaways. Done synchronously per request because the
       // cost is tiny (object iteration + occasional file write).
-      const liveKeys = new Set([...fgfItems, ...gpItems].map(it => it.dedupKey));
+      // v2.11.1: also treats watcher-item keys as "live" so an ignore
+      // marker on an IndieGala product stays valid.
+      const liveKeys = new Set([...fgfItems, ...gpItems, ...Object.values(watcherItemsBySource).flat()].map(it => it.dedupKey));
       const PRUNE_MS = 14 * 24 * 3600 * 1000;
       const nowMs = Date.now();
       let pruned = 0;
@@ -9399,13 +9571,28 @@ const server = http.createServer(async (req, res) => {
         catch (e) { console.warn(`[${datetime()}] discoveries-state prune write failed: ${e.message}`); }
       }
 
+      // Response body: per-source buckets. Total counts reflect the
+      // POST-dedup count (i.e. what actually renders in the panel);
+      // the raw pre-dedup counts are still available via .rawTotal
+      // for the meta line if anyone wants "GamerPower reported 17
+      // entries, 3 already tracked by watchers."
       const responseBody = {
         fetchedAt: new Date().toISOString(),
         sources: {
-          gamerpower: { items: gpItems, error: gpError, total: gpItems.length },
-          freegamefindings: { items: fgfItems, error: fgfError, total: fgfItems.length },
+          gamerpower: { items: gpItemsFinal, error: gpError, total: gpItemsFinal.length, rawTotal: gpItems.length },
+          freegamefindings: { items: fgfItemsFinal, error: fgfError, total: fgfItemsFinal.length, rawTotal: fgfItems.length },
         },
       };
+      // Add per-watcher buckets under the same shape. Zero-item
+      // buckets are still included so the panel can show "0 tracked"
+      // vs "no bucket" clearly.
+      for (const [source, items] of Object.entries(watcherItemsBySource)) {
+        // Raw count reflects the pre-dedup product count from the
+        // watcher's state file — informative signal for "this watcher
+        // knows about 6 items, 4 unique after dedup with GP" scenarios.
+        const rawTotal = watcherProducts.filter(p => p.source === source).length;
+        responseBody.sources[source] = { items, error: null, total: items.length, rawTotal };
+      }
       // Stash for the cache short-circuit at the top of this handler.
       // Subsequent reads within DISC_CACHE_TTL_MS skip the aggregator
       // round-trip and the DB-fold and ship this body straight back.

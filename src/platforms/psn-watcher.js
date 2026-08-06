@@ -63,7 +63,9 @@ for (const e of entries) {
   if (!id || !name) continue;
   const url = e.open_giveaway_url || e.gamerpower_url || 'https://www.gamerpower.com/';
   const note = (e.platforms || 'psn').split(',')[0].trim();
-  if (!products.has(id)) products.set(id, { name, url, note });
+  // Preserve endDate + worth from GamerPower so the Discoveries tab can
+  // render the ends-at chip and the EXPIRED badge on stale promos.
+  if (!products.has(id)) products.set(id, { name, url, note, endDate: e.end_date || null, worth: e.worth || null });
 }
 
 log.status('Free PSN items on page', products.size);

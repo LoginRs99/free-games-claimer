@@ -423,6 +423,37 @@ try {
     await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => { });
     const purchaseBtn = page.locator('button[data-testid="purchase-cta-button"]').first();
     const btnText = (await purchaseBtn.innerText()).toLowerCase(); // barrier to block until page is loaded
+    // v2.11.2: locale-portable already-owned detection. Steggl's #141 —
+    // German UI renders "In der Bibliothek" instead of "In library", so
+    // the string comparison below missed it; the else-branch then clicked
+    // the disabled button and waited 180s for it to enable. Epic disables
+    // the purchase CTA the moment ownership resolves, regardless of
+    // locale, so the disabled attribute is the reliable structural signal.
+    // Text-based detection stays as the primary path (fast, doesn't need
+    // an extra roundtrip) and locale variants are matched below; disabled
+    // state is the fallback catch-all.
+    const btnDisabled = await purchaseBtn.isDisabled().catch(() => false);
+    // Locale variants of "In library" — extend as new markets surface.
+    // Match is startsWith so we don't confuse partial words like "in" in
+    // other contexts. All start with the language's equivalent of "In".
+    const OWNED_TEXTS = [
+      'in library',             // en
+      'in der bibliothek',      // de
+      'en biblioteca',          // es
+      'en la biblioteca',       // es (alt)
+      'dans la bibliothèque',   // fr
+      'in libreria',            // it
+      'in biblioteca',          // it (alt)
+      'na biblioteca',          // pt
+      'w bibliotece',           // pl
+      'kütüphanede',            // tr
+      'ライブラリ内',              // ja
+      '라이브러리에 있음',            // ko
+      '在库中',                    // zh-CN
+      '在資料庫中',                 // zh-TW
+    ];
+    const btnTextIndicatesOwned = OWNED_TEXTS.some(t => btnText === t || btnText.startsWith(t));
+    const isOwnedByButton = btnTextIndicatesOwned || btnDisabled;
 
     // click Continue if 'This game contains mature content recommended only for ages 18+'
     if (await page.locator('button:has-text("Continue")').count() > 0) {
@@ -460,7 +491,13 @@ try {
     const notify_game = { title, url, status: 'failed' };
     notify_games.push(notify_game); // status is updated below
 
-    if (btnText == 'in library') {
+    if (isOwnedByButton) {
+      // Log the exact text on disabled-only paths so we can extend
+      // OWNED_TEXTS if a locale slips through. Suppressed on English
+      // matches to avoid log noise on the common path.
+      if (!btnTextIndicatesOwned && btnDisabled) {
+        log.info(`Detected already-owned via disabled button (text was "${btnText}") — extend OWNED_TEXTS in epic-games.js to match this locale`);
+      }
       if (!ownedLogged.has(title) && !loggedTitles.has(title)) {
         log.owned(title);
         ownedLogged.add(title);
@@ -486,9 +523,13 @@ try {
       // Last-second re-check before we commit to clicking — covers the
       // case where networkidle returned but Epic's ownership state was
       // still loading; the button can flip from "Get" to "In Library"
-      // any time before user interaction.
+      // any time before user interaction. Uses the same locale-portable
+      // detection as the primary path above (disabled attribute + text
+      // variants).
       const recheckText = (await purchaseBtn.innerText().catch(() => btnText)).toLowerCase();
-      if (recheckText === 'in library') {
+      const recheckDisabled = await purchaseBtn.isDisabled().catch(() => false);
+      const recheckOwned = OWNED_TEXTS.some(t => recheckText === t || recheckText.startsWith(t)) || recheckDisabled;
+      if (recheckOwned) {
         log.ok(`${title} — already in library (lagged ownership state)`);
         notify_game.status = 'existed';
         db.data[user][game_id].status ||= 'existed';

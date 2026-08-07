@@ -4,6 +4,23 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.4
+
+**Fix: false-positive "claimed!" logs on Epic Games — Steggl's [#141](https://github.com/feldorn/free-games-claimer/issues/141) followup, my v2.11.3 regression.**
+
+v2.11.3 added `if (btn.disabled) return true;` to the Epic success race, thinking a disabled purchase-CTA button = "already in library". That's true BEFORE clicking (correct v2.11.1 fix, still in place for the initial check), but AFTER clicking Epic disables the same button during the loading spinner. The success race triggered instantly on the loading state and logged "claimed!" while the click was still processing.
+
+Symptoms Steggl caught:
+- Log shows `✓ Guidebook Of Babel — claimed!` after 23s (normal ~130s), then the SAME title reappears in the loop with a second `→ claiming` attempt (because the DB wasn't actually updated, the second-pass check saw it as un-owned)
+- Games not actually in the library despite the "claimed!" line
+- On Spider Fox this happened in German too — locale wasn't the trigger, my regression was
+
+Fix: text-only detection in the post-click race + failure recovery probe. The initial pre-click check keeps the `disabled` shortcut (that's a valid already-owned signal, no click has happened yet). Post-click: only trust modal text or CTA-text transitioning to a known "owned" string. Same-trap in the recovery probe fixed the same way.
+
+I should have caught this in review — the two "disabled" states weren't visually different in the diff. Filing a memory note so it doesn't happen again.
+
+---
+
 ## What's new in 2.11.3
 
 **Epic Games full-flow locale portability — Steggl's [#141](https://github.com/feldorn/free-games-claimer/issues/141) followup.**

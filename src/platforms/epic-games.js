@@ -659,14 +659,22 @@ try {
         // needed this: the primary claim ran to the Add-to-Library click
         // in German but the success-race then timed out because the modal
         // text and the CTA-flip check were still English-only.
+        // v2.11.4: dropped the `if (btn.disabled) return true` short-circuit
+        // that v2.11.3 added — that state also fires during Epic's post-click
+        // loading spinner, causing the race to resolve as "success" while the
+        // claim is still processing (Steggl's #141 followup: log says
+        // "claimed!" 20-30s in but games weren't actually in library).
+        // Success signal is now text-only via the locale-portable regexes:
+        // modal-copy match OR CTA text transitioning to a known "owned"
+        // string. Both are only true AFTER Epic confirms the purchase.
         await Promise.race([
           page.getByText(RX_ORDER_SUCCESS).first().waitFor({ state: 'attached' }),
           page.locator('button').filter({ hasText: new RegExp(RX_CONTINUE_BROWSING.source + '|' + RX_DOWNLOAD_LAUNCHER.source, 'i') }).first().waitFor({ state: 'visible' }),
           page.waitForFunction((ownedList) => {
             const btn = document.querySelector('button[data-testid="purchase-cta-button"]');
             if (!btn) return false;
-            if (btn.disabled) return true;
             const txt = (btn.innerText || '').trim().toLowerCase();
+            if (!txt || txt === 'loading') return false;
             return ownedList.some(t => txt === t || txt.startsWith(t));
           }, { timeout: cfg.timeout }, OWNED_TEXTS_GLOBAL),
         ]);
@@ -689,8 +697,11 @@ try {
         try {
           const ctaLoc = page.locator('button[data-testid="purchase-cta-button"]').first();
           const cta = (await ctaLoc.innerText().catch(() => '')).toLowerCase();
-          const ctaDisabled = await ctaLoc.isDisabled().catch(() => false);
-          if (OWNED_TEXTS_GLOBAL.some(t => cta === t || cta.startsWith(t)) || ctaDisabled) recoveredViaCta = true;
+          // Text-only detection here — disabled state during load can
+          // false-positive as "success" (same trap v2.11.4 fixed above).
+          // Recovery probe fires after the race timed out, so text alone
+          // is a stronger signal (Epic would have settled by now).
+          if (cta && cta !== 'loading' && OWNED_TEXTS_GLOBAL.some(t => cta === t || cta.startsWith(t))) recoveredViaCta = true;
         } catch { /* CTA probe is best-effort */ }
         if (recoveredViaCta) {
           log.ok(`${title} — claim succeeded (confirmed via post-click CTA)`);
@@ -796,14 +807,22 @@ try {
         // needed this: the primary claim ran to the Add-to-Library click
         // in German but the success-race then timed out because the modal
         // text and the CTA-flip check were still English-only.
+        // v2.11.4: dropped the `if (btn.disabled) return true` short-circuit
+        // that v2.11.3 added — that state also fires during Epic's post-click
+        // loading spinner, causing the race to resolve as "success" while the
+        // claim is still processing (Steggl's #141 followup: log says
+        // "claimed!" 20-30s in but games weren't actually in library).
+        // Success signal is now text-only via the locale-portable regexes:
+        // modal-copy match OR CTA text transitioning to a known "owned"
+        // string. Both are only true AFTER Epic confirms the purchase.
         await Promise.race([
           page.getByText(RX_ORDER_SUCCESS).first().waitFor({ state: 'attached' }),
           page.locator('button').filter({ hasText: new RegExp(RX_CONTINUE_BROWSING.source + '|' + RX_DOWNLOAD_LAUNCHER.source, 'i') }).first().waitFor({ state: 'visible' }),
           page.waitForFunction((ownedList) => {
             const btn = document.querySelector('button[data-testid="purchase-cta-button"]');
             if (!btn) return false;
-            if (btn.disabled) return true;
             const txt = (btn.innerText || '').trim().toLowerCase();
+            if (!txt || txt === 'loading') return false;
             return ownedList.some(t => txt === t || txt.startsWith(t));
           }, { timeout: cfg.timeout }, OWNED_TEXTS_GLOBAL),
         ]);

@@ -294,6 +294,15 @@ try {
         // match on debug tells us exactly which label FAB is using in production,
         // so the next iteration can prune the list to the real one.
         const candidates = [
+          // v2.11.6: "Add to library" was missing — FAB's checkout modal
+          // uses this text now (Steggl's #127 followup, same pattern as
+          // Epic's 2026-05-28 relabel per amphoterism's #59). Placed at
+          // the top so it wins the race when present. Both role and text
+          // matchers to catch either locator style. "Add to my library"
+          // (with "my") is the catalog-page variant already handled
+          // earlier in the flow — the checkout-modal variant drops "my".
+          { name: 'Add to library (role)', loc: page.getByRole('button', { name: /^add\s*to\s*(my\s*)?library$/i }).first() },
+          { name: 'Add to library (text)', loc: page.locator('button:has-text("Add to library"), button:has-text("Add to Library"), button:has-text("Add To Library")').first() },
           { name: 'Place Order (role)',  loc: page.getByRole('button', { name: /place\s*order/i }).first() },
           { name: 'Complete Order (role)', loc: page.getByRole('button', { name: /complete\s*(order|purchase|checkout)/i }).first() },
           { name: 'Confirm Order (role)', loc: page.getByRole('button', { name: /confirm\s*(order|purchase)?/i }).first() },

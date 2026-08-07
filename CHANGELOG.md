@@ -4,6 +4,18 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.6
+
+**Fix: FAB checkout button "Add to library" was missing from the selector candidate list ([#127](https://github.com/feldorn/free-games-claimer/issues/127) followup, screenshot from @Steggl).**
+
+Same pattern Epic went through in 2026-05-28 (amphoterism's [#59](https://github.com/feldorn/free-games-claimer/issues/59)): FAB's €0 checkout modal now uses "Add to library" as the confirm button. v2.9.1 broadened the selector list to 10 candidates (Place Order / Complete Order / Confirm / Get it now / Checkout / Buy Now dialog / etc.) — but not "Add to library". Every user hitting the €0 checkout flow was silently stuck at the 15s candidate-race timeout.
+
+Steggl's screenshot dropped the disambiguation: the button was literally labeled `Add to library`, right there in plain sight. Added it as the first candidate in the race (both `getByRole` for accessibility-tree matching and the standard `has-text` variants — with and without "my" — for text-based matching).
+
+FAB renders this button in English regardless of browser locale, so no locale variants needed. Note: "Add to My Library" (with "my") is the CATALOG-page button that's a different flow branch — this fix targets specifically the CHECKOUT modal variant, which drops the "my".
+
+---
+
 ## What's new in 2.11.5
 
 **Fix: recovery-probe transient-owned-state false positive on non-English Epic (Steggl's [#141](https://github.com/feldorn/free-games-claimer/issues/141) round 3).**

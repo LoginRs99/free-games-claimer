@@ -4,6 +4,20 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.5
+
+**Fix: recovery-probe transient-owned-state false positive on non-English Epic (Steggl's [#141](https://github.com/feldorn/free-games-claimer/issues/141) round 3).**
+
+v2.11.4 fixed v2.11.3's post-click race by dropping the disabled-attribute shortcut. But the failure-recovery probe (which runs when the race times out) still uses text-based owned-state detection — and my v2.11.4 change made that probe locale-aware. On Steggl's German browser, Epic's checkout can flash "In der Bibliothek" (In library) transiently during a failed transaction — cart created → server rollback → back to "Holen" (Get). The probe caught the fleeting owned state and declared success; the DB got marked claimed for a game that wasn't.
+
+Fix: stability check. If the probe sees an owned-state string, wait 3 seconds and re-read the same button. Only trust the recovery signal if both reads still show owned. Transient states won't survive the 3s gap; real ownership sticks.
+
+Also logs an info line when the CTA flashes owned but doesn't stabilize, so if this recurs users can share the log for a proper diagnosis.
+
+**DB-poisoning note for users upgrading from v2.11.3:** entries wrongly marked `claimed` by that version will not be re-checked by v2.11.5. If you have games showing as "already claimed" in the log but not actually in your Epic library, open `data/epic-games.json` and delete those entries — next run will re-attempt them cleanly.
+
+---
+
 ## What's new in 2.11.4
 
 **Fix: false-positive "claimed!" logs on Epic Games — Steggl's [#141](https://github.com/feldorn/free-games-claimer/issues/141) followup, my v2.11.3 regression.**

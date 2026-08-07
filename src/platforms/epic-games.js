@@ -696,12 +696,22 @@ try {
         let recoveredViaCta = false;
         try {
           const ctaLoc = page.locator('button[data-testid="purchase-cta-button"]').first();
-          const cta = (await ctaLoc.innerText().catch(() => '')).toLowerCase();
-          // Text-only detection here — disabled state during load can
-          // false-positive as "success" (same trap v2.11.4 fixed above).
-          // Recovery probe fires after the race timed out, so text alone
-          // is a stronger signal (Epic would have settled by now).
-          if (cta && cta !== 'loading' && OWNED_TEXTS_GLOBAL.some(t => cta === t || cta.startsWith(t))) recoveredViaCta = true;
+          const isOwnedText = (t) => t && t !== 'loading' && OWNED_TEXTS_GLOBAL.some(w => t === w || t.startsWith(w));
+          // v2.11.5: stability check. v2.11.4 introduced a new false-positive
+          // class — Epic's German UI can flash "In der Bibliothek" transiently
+          // during a failed transaction (cart created → rollback → back to
+          // "Holen"). Locale-aware recovery read that fleeting state and
+          // declared success. Reading twice with a 3s gap forces the CTA to
+          // stabilize: transient owned-state disappears, real ownership
+          // sticks. Cost: ~3s extra per recovery — trivial on daily cadence.
+          // Steggl's #141 followup 2 (v2.11.4 regression).
+          const cta1 = (await ctaLoc.innerText().catch(() => '')).toLowerCase();
+          if (isOwnedText(cta1)) {
+            await page.waitForTimeout(3000);
+            const cta2 = (await ctaLoc.innerText().catch(() => '')).toLowerCase();
+            if (isOwnedText(cta2)) recoveredViaCta = true;
+            else log.info(`${title} — CTA flashed owned state but didn't stabilize (was "${cta1}", now "${cta2}") — treating as failed`);
+          }
         } catch { /* CTA probe is best-effort */ }
         if (recoveredViaCta) {
           log.ok(`${title} — claim succeeded (confirmed via post-click CTA)`);

@@ -2008,7 +2008,15 @@ function markMsRunFiredToday() {
 // main daily run even when they have dailyStartTime/loop set (workaround
 // for #69: decoupled scheduler quietly not firing in some environments).
 function legacyCombinedMode(sched = getSchedulerConfig(), active = activeServices()) {
-  const msActive = active.has('microsoft') || active.has('microsoft-mobile');
+  // Parent-gate semantic (v2.11.9): only the 'microsoft' toggle controls
+  // whether MS Rewards runs. microsoft-mobile is a SUB-toggle inside the
+  // MS session (whether to run the mobile pass in addition to desktop),
+  // handled inside microsoft.js at runtime. It doesn't run independently.
+  // Previously this was an OR — which meant microsoft-mobile's default-on
+  // (registry defaultActive:true, no explicit false in config.json for
+  // users who never touched it) kept MS running even when parent was
+  // toggled off. Reported live 2026-08-08.
+  const msActive = active.has('microsoft');
   if (!msActive) return false;
   if (cfg.ms_run_with_main_chain) return true;
   return !sched.dailyStartTime && !sched.loop && sched.msHours > 0;
@@ -2109,7 +2117,15 @@ function msTargetInWindow(st, c) {
 function computeMsWakeMs() {
   const c = getSchedulerConfig();
   const active = activeServices();
-  const msActive = active.has('microsoft') || active.has('microsoft-mobile');
+  // Parent-gate semantic (v2.11.9): only the 'microsoft' toggle controls
+  // whether MS Rewards runs. microsoft-mobile is a SUB-toggle inside the
+  // MS session (whether to run the mobile pass in addition to desktop),
+  // handled inside microsoft.js at runtime. It doesn't run independently.
+  // Previously this was an OR — which meant microsoft-mobile's default-on
+  // (registry defaultActive:true, no explicit false in config.json for
+  // users who never touched it) kept MS running even when parent was
+  // toggled off. Reported live 2026-08-08.
+  const msActive = active.has('microsoft');
   if (!msActive || c.msHours <= 0) { msTodayState = null; return 0; }
   if (legacyCombinedMode(c, active)) { msTodayState = null; return 0; }
 
@@ -2425,7 +2441,15 @@ async function msSchedulerLoop() {
     // MS may have been deactivated, the file may have been edited.
     const c = getSchedulerConfig();
     const active = activeServices();
-    const msActive = active.has('microsoft') || active.has('microsoft-mobile');
+    // Parent-gate semantic (v2.11.9): only the 'microsoft' toggle controls
+  // whether MS Rewards runs. microsoft-mobile is a SUB-toggle inside the
+  // MS session (whether to run the mobile pass in addition to desktop),
+  // handled inside microsoft.js at runtime. It doesn't run independently.
+  // Previously this was an OR — which meant microsoft-mobile's default-on
+  // (registry defaultActive:true, no explicit false in config.json for
+  // users who never touched it) kept MS running even when parent was
+  // toggled off. Reported live 2026-08-08.
+  const msActive = active.has('microsoft');
     if (!msActive || c.msHours <= 0 || legacyCombinedMode(c, active)) continue;
     const st = readMsScheduleToday();
     if (!st || st.status !== 'pending') continue;
@@ -2806,7 +2830,15 @@ async function getState() {
   // Always derive next-run timestamps from config so the UI never sits at
   // "Calculating…" before the loops populate their cached values.
   const sched = getSchedulerConfig();
-  const msActive = active.has('microsoft') || active.has('microsoft-mobile');
+  // Parent-gate semantic (v2.11.9): only the 'microsoft' toggle controls
+  // whether MS Rewards runs. microsoft-mobile is a SUB-toggle inside the
+  // MS session (whether to run the mobile pass in addition to desktop),
+  // handled inside microsoft.js at runtime. It doesn't run independently.
+  // Previously this was an OR — which meant microsoft-mobile's default-on
+  // (registry defaultActive:true, no explicit false in config.json for
+  // users who never touched it) kept MS running even when parent was
+  // toggled off. Reported live 2026-08-08.
+  const msActive = active.has('microsoft');
   const legacyMode = legacyCombinedMode(sched, active);
   const dailyAnchored = !!sched.dailyStartTime;
   const mainEnabled = legacyMode || dailyAnchored || sched.loop > 0;

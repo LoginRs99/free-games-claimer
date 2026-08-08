@@ -4,6 +4,27 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.9
+
+**Fix: MS Rewards ran despite the parent toggle being off — parent-gate semantic broken by an OR check + `microsoft-mobile.defaultActive: true`.**
+
+Reported live 2026-08-08: user had Microsoft Rewards toggled OFF in Settings, yet MS Rewards ran at 08:58 that morning.
+
+**Root cause:** four places in the scheduler used `active.has('microsoft') || active.has('microsoft-mobile')` as the MS-active check. The registry declares `microsoft-mobile.defaultActive: true` (via `src/sites.js`). Users who never explicitly touched the mobile sub-toggle have no `services.microsoft-mobile.active` entry in `config.json`, so `activeServices()` returns `microsoft-mobile` as active *from the default*. Even when the parent `microsoft` was set to `false`, the OR gate saw mobile as active and let the fire through.
+
+The registry hint on the "Run mobile session" sub-toggle explicitly says *"Unchecking the parent Microsoft Rewards toggle above disables both desktop and mobile together"* — the intended semantic. The OR check contradicted it.
+
+**Fix:** all four MS-active checks now use only `active.has('microsoft')`. Parent-gate semantic. `microsoft-mobile` is a **sub-toggle** consumed by `microsoft.js` at runtime (whether to run the mobile pass in addition to desktop) — it doesn't fire independently and never has. Fixed in:
+
+- `legacyCombinedMode()` — legacy chain no longer fires MS when parent is off
+- `computeMsWakeMs()` — MS wake-computation returns null when parent is off
+- `msSchedulerLoop()` — per-wake fire-check now correctly gates on parent alone
+- `getState()` — panel status reflects real MS-active state
+
+Backward compatible for the common case (both microsoft and microsoft-mobile toggled together, which is what the linked-active writer in Settings has always done). Fixes the edge case where microsoft-mobile has no explicit false entry and defaults to true from the registry.
+
+---
+
 ## What's new in 2.11.8
 
 **Fix: anchored main scheduler now retries today's anchor for 2h when blocked, instead of skipping straight to tomorrow ([#142](https://github.com/feldorn/free-games-claimer/issues/142) amphoterism).**

@@ -39,6 +39,11 @@ const OWNED_TEXTS_GLOBAL = [
   'w bibliotece', 'kütüphanede', 'ライブラリ内', '라이브러리에 있음',
   '在库中', '在資料庫中',
 ];
+// Shared predicate. Hoisted v2.11.7 so the initial check, the recheck,
+// the success race, and the recovery probe all agree on what "owned" is.
+// The `loading` filter was previously present in the recovery-probe copy
+// only — code-review flagged the drift. Now all callers get it uniformly.
+const isOwnedText = (t) => t && t !== 'loading' && OWNED_TEXTS_GLOBAL.some(w => t === w || t.startsWith(w));
 
 log.section(`Epic Games (v${siteVersion('epic-games')})`);
 
@@ -457,10 +462,11 @@ try {
     // an extra roundtrip) and locale variants are matched below; disabled
     // state is the fallback catch-all.
     const btnDisabled = await purchaseBtn.isDisabled().catch(() => false);
-    // v2.11.3: OWNED_TEXTS now module-scoped as OWNED_TEXTS_GLOBAL so the
-    // retry-path race + main race can share the same table. Startsswith
-    // match (not equal) so a trailing space or punctuation doesn't miss.
-    const btnTextIndicatesOwned = OWNED_TEXTS_GLOBAL.some(t => btnText === t || btnText.startsWith(t));
+    // v2.11.7: use the shared isOwnedText predicate. Pre-click check still
+    // adds the disabled-attribute as a positive signal (that's a valid
+    // already-owned indicator BEFORE any click — post-click loading spinner
+    // trap was fixed in v2.11.4).
+    const btnTextIndicatesOwned = isOwnedText(btnText);
     const isOwnedByButton = btnTextIndicatesOwned || btnDisabled;
 
     // click Continue if 'This game contains mature content recommended only for ages 18+'
@@ -536,7 +542,7 @@ try {
       // variants).
       const recheckText = (await purchaseBtn.innerText().catch(() => btnText)).toLowerCase();
       const recheckDisabled = await purchaseBtn.isDisabled().catch(() => false);
-      const recheckOwned = OWNED_TEXTS_GLOBAL.some(t => recheckText === t || recheckText.startsWith(t)) || recheckDisabled;
+      const recheckOwned = isOwnedText(recheckText) || recheckDisabled;
       if (recheckOwned) {
         log.ok(`${title} — already in library (lagged ownership state)`);
         notify_game.status = 'existed';
@@ -670,6 +676,9 @@ try {
         await Promise.race([
           page.getByText(RX_ORDER_SUCCESS).first().waitFor({ state: 'attached' }),
           page.locator('button').filter({ hasText: new RegExp(RX_CONTINUE_BROWSING.source + '|' + RX_DOWNLOAD_LAUNCHER.source, 'i') }).first().waitFor({ state: 'visible' }),
+          // Same owned-text semantics as the shared isOwnedText predicate,
+          // inlined here because waitForFunction runs in the browser context
+          // where the helper isn't reachable. Kept in sync via OWNED_TEXTS_GLOBAL.
           page.waitForFunction((ownedList) => {
             const btn = document.querySelector('button[data-testid="purchase-cta-button"]');
             if (!btn) return false;
@@ -696,19 +705,19 @@ try {
         let recoveredViaCta = false;
         try {
           const ctaLoc = page.locator('button[data-testid="purchase-cta-button"]').first();
-          const isOwnedText = (t) => t && t !== 'loading' && OWNED_TEXTS_GLOBAL.some(w => t === w || t.startsWith(w));
-          // v2.11.5: stability check. v2.11.4 introduced a new false-positive
-          // class — Epic's German UI can flash "In der Bibliothek" transiently
-          // during a failed transaction (cart created → rollback → back to
-          // "Holen"). Locale-aware recovery read that fleeting state and
-          // declared success. Reading twice with a 3s gap forces the CTA to
-          // stabilize: transient owned-state disappears, real ownership
-          // sticks. Cost: ~3s extra per recovery — trivial on daily cadence.
-          // Steggl's #141 followup 2 (v2.11.4 regression).
-          const cta1 = (await ctaLoc.innerText().catch(() => '')).toLowerCase();
+          // v2.11.5: stability check for the recovery-probe. v2.11.4 could
+          // false-positive on a transient owned-flash during Epic's failed-
+          // transaction rollback (German UI shows "In der Bibliothek" briefly).
+          // Reading twice with a 3s gap forces the CTA to stabilize.
+          // v2.11.7: explicit 3s timeout on the second read — without it,
+          // if the CTA detaches during the 3s gap (page nav, DOM removal)
+          // the read blocks for the whole default `context.setDefaultTimeout`
+          // (60s) before .catch fires. Explicit short timeout matches the
+          // stability-window we're already committed to.
+          const cta1 = (await ctaLoc.innerText({ timeout: 3000 }).catch(() => '')).toLowerCase();
           if (isOwnedText(cta1)) {
             await page.waitForTimeout(3000);
-            const cta2 = (await ctaLoc.innerText().catch(() => '')).toLowerCase();
+            const cta2 = (await ctaLoc.innerText({ timeout: 3000 }).catch(() => '')).toLowerCase();
             if (isOwnedText(cta2)) recoveredViaCta = true;
             else log.info(`${title} — CTA flashed owned state but didn't stabilize (was "${cta1}", now "${cta2}") — treating as failed`);
           }
@@ -828,6 +837,9 @@ try {
         await Promise.race([
           page.getByText(RX_ORDER_SUCCESS).first().waitFor({ state: 'attached' }),
           page.locator('button').filter({ hasText: new RegExp(RX_CONTINUE_BROWSING.source + '|' + RX_DOWNLOAD_LAUNCHER.source, 'i') }).first().waitFor({ state: 'visible' }),
+          // Same owned-text semantics as the shared isOwnedText predicate,
+          // inlined here because waitForFunction runs in the browser context
+          // where the helper isn't reachable. Kept in sync via OWNED_TEXTS_GLOBAL.
           page.waitForFunction((ownedList) => {
             const btn = document.querySelector('button[data-testid="purchase-cta-button"]');
             if (!btn) return false;

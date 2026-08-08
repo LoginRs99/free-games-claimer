@@ -4,6 +4,18 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.7
+
+**Polish release — three findings from the automated review of v2.11.4..v2.11.6.**
+
+- **Epic recovery-probe stability check now uses an explicit 3s timeout on the second `innerText()` read** (`src/platforms/epic-games.js:711`). Without it, a page-nav or DOM-detach during the 3s stability gap would fall through to the default `context.setDefaultTimeout` (60s) — the recovery would silently block for ~63s per game on a detached CTA instead of the intended ~4s. Cheap correctness fix.
+- **`isOwnedText(t)` predicate hoisted to module scope** (`src/platforms/epic-games.js:44`). The same "is this button text one of the known owned-state strings" check was re-implemented in four places (initial CTA, recheck, success race, recovery probe), and drift had already started — the `loading` filter was present in some copies, absent in others. Now one canonical predicate, callers replaced.
+- **`src/platforms/fab.js`: dropped the three casing variants** of "Add to library" — Playwright's `:has-text()` is case-insensitive, so `Add to Library` and `Add To Library` were functionally identical to `Add to library`. Cleanup only, no behavior change.
+
+No user-visible functionality change. Steggl's #141 v2.11.5 stability check + #127 v2.11.6 FAB fix both apply as before; this release just tightens the internal geometry.
+
+---
+
 ## What's new in 2.11.6
 
 **Fix: FAB checkout button "Add to library" was missing from the selector candidate list ([#127](https://github.com/feldorn/free-games-claimer/issues/127) followup, screenshot from @Steggl).**

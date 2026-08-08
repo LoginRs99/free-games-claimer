@@ -2352,22 +2352,53 @@ async function mainSchedulerLoop() {
     // used). Decoupled mode: explicit non-MS list, which intentionally
     // bypasses CLAIM_CMD because the override would re-include microsoft.
     const sites = legacyCombinedMode(sched, active) ? null : nonMsActiveSiteIds();
-    const fired = await fireScheduledRun({
+    let fired = await fireScheduledRun({
       label: 'main',
       sites,
       postRun: () => postRunSessionCheck(),
     });
-    // Mirror 2.8.11's MS-scheduler backoff: when fireScheduledRun returns
-    // false (blocker — another run in progress, batch redeem in flight,
-    // interactive Login session active, etc.), back off 10 minutes before
-    // the next wake. Without this, computeMainWakeMs's wake-floor of 60 s
-    // means we tight-loop "Cannot start run — claim run in progress" once
-    // per minute against a long-running or stuck blocker. Reported by
-    // @dabziuebu4egh2 on #62 — 20+ minutes of one-line-per-minute log
-    // spam against a phantom runProcess. The browserBusy aliveness check
-    // (just added) auto-clears truly-dead runProcess state on the next
-    // tick, but if the blocker is real-but-long, this prevents noise.
-    if (!fired) {
+    // Blocked-fire handling. Two modes:
+    //
+    // (1) Anchored mode (dailyStartTime set): if the fire is blocked, we
+    //     stay on TODAY'S anchor and retry every 10 min for up to 2h.
+    //     Without this, computeMainWakeMs's next-interval math advances to
+    //     tomorrow's anchor as soon as today's anchor is past, and the
+    //     blocked run gets silently lost. Amphoterism's #142 report:
+    //     Thursday 11:10 main chain blocked by MS Rewards 11:11-12:07,
+    //     backoff-then-recompute jumped to Friday 11:10, main never fired
+    //     Thursday. 2h retry window is generous enough to cover typical
+    //     MS runs + batch redeems while not blocking indefinitely.
+    // (2) Non-anchored (bare LOOP): a single 10-min backoff before the
+    //     outer loop re-computes wake from lastMainCompletedAt. That
+    //     path doesn't hit the "advance to tomorrow" trap because its
+    //     next-wake anchor is completion-relative, not calendar-clock.
+    //     The 10-min backoff still helps against log-spam on a stuck
+    //     blocker per @dabziuebu4egh2's #62.
+    if (!fired && sched.dailyStartTime) {
+      const anchoredAt = Date.now();
+      const RETRY_WINDOW_MS = 2 * 3600 * 1000;
+      while (Date.now() - anchoredAt < RETRY_WINDOW_MS) {
+        const elapsedMin = Math.round((Date.now() - anchoredAt) / 60000);
+        const remainMin = Math.round((RETRY_WINDOW_MS - (Date.now() - anchoredAt)) / 60000);
+        console.log(`[${datetime()}] Scheduler (main): fire blocked — retrying in 10 min (elapsed ${elapsedMin}m of 120m retry window, ${remainMin}m remaining).`);
+        const how2 = await sleepUntilWakeup(10 * 60 * 1000);
+        if (how2 === 'reload') break;
+        const c2 = getSchedulerConfig();
+        // If the schedule was reconfigured mid-retry, drop out and let
+        // the outer loop recompute fresh.
+        if (c2.dailyStartTime !== sched.dailyStartTime) break;
+        const sites2 = legacyCombinedMode(c2, activeServices()) ? null : nonMsActiveSiteIds();
+        fired = await fireScheduledRun({
+          label: 'main',
+          sites: sites2,
+          postRun: () => postRunSessionCheck(),
+        });
+        if (fired) break;
+      }
+      if (!fired) {
+        console.log(`[${datetime()}] Scheduler (main): abandoned today's ${sched.dailyStartTime} anchor after 2h retry window — advancing to next scheduled wake.`);
+      }
+    } else if (!fired) {
       await sleepUntilWakeup(10 * 60 * 1000);
     }
   }

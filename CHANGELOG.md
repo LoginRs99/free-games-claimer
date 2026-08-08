@@ -4,6 +4,22 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.8
+
+**Fix: anchored main scheduler now retries today's anchor for 2h when blocked, instead of skipping straight to tomorrow ([#142](https://github.com/feldorn/free-games-claimer/issues/142) amphoterism).**
+
+Concrete failure amphoterism reported: main claim chain scheduled Thursday 11:10, MS Rewards started 11:11 and ran to 12:07. Main tried to fire at 11:10, got blocked (lock held by MS), backed off 10 min per prior behaviour — but on the next loop iteration, `computeMainWakeMs()` saw 11:10 was past and advanced to Friday 11:10. **Today's main run was silently lost until amphoterism manually triggered it at 13:05.**
+
+Fix: when a fire is blocked in **anchored mode** (`dailyStartTime` set), stay on today's anchor and retry every 10 min for up to 2 hours before giving up. When the retry loop times out (fire never succeeded in 2h), an explicit `abandoned today's <HH:MM> anchor after 2h retry window` log line fires so the abandonment is visible rather than silent.
+
+Non-anchored (bare LOOP) mode is unaffected — its next-wake anchor is completion-relative (`lastMainCompletedAt + intervalMs`), not calendar-clock, so the "advance to tomorrow" trap doesn't apply. Same 10-min backoff still fires there to prevent log-spam per @dabziuebu4egh2's [#62](https://github.com/feldorn/free-games-claimer/issues/62).
+
+MS scheduler already handles blocked fires correctly (per-day randomized pick within window; blocked attempts re-pick or mark 'missed'). Unchanged.
+
+**2h retry window rationale:** long enough to cover a typical MS Rewards run (30-60 min) plus a batch redeem (variable), short enough that it doesn't collide with the next daily anchor even on aggressive intervals.
+
+---
+
 ## What's new in 2.11.7
 
 **Polish release — three findings from the automated review of v2.11.4..v2.11.6.**

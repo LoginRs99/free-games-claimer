@@ -3025,7 +3025,6 @@ async function getState() {
   // Always derive next-run timestamps from config so the UI never sits at
   // "Calculating…" before the loops populate their cached values.
   const sched = getSchedulerConfig();
-
   // Parent-gate semantic (v2.11.9): only the 'microsoft' toggle controls
   // whether MS Rewards runs. microsoft-mobile is a SUB-toggle inside the
   // MS session (whether to run the mobile pass in addition to desktop),
@@ -3041,7 +3040,6 @@ async function getState() {
 
   const awaScheduled =
     active.has('alienware-arena') && sched.awaHours > 0;
-
   const legacyMode = legacyCombinedMode(sched, active);
   const dailyAnchored = !!sched.dailyStartTime;
   const mainEnabled = legacyMode || dailyAnchored || sched.loop > 0;

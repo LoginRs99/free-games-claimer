@@ -4,6 +4,22 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.11.10
+
+**Feature: collect additional Microsoft Rewards points from the new-UI 'Keep earning' section ([PR #144](https://github.com/feldorn/free-games-claimer/pull/144) — credit @keloru).**
+
+Two new-UI point sources are now harvested that v2.11.x wasn't touching:
+
+1. **`#moreactivities` (Keep earning) section walk.** The new-UI activity walker previously covered `#dailyset` and `#exploreonbing`. Cards in the `#moreactivities` block — the "Keep earning" section beneath the daily set — were being left on the table. Added as a third pass with the same click-and-sleep cadence as the other two sections.
+
+2. **Default-search-engine bonus.** First daily Bing search now uses the `bing.com?FORM=CHROMN&PC=U316&q=` URL that mimics Chromium's built-in Bing default. This unlocks the small daily bonus MS grants for using Bing as the browser's default search engine. Subsequent searches keep the existing behaviour.
+
+**Live-account verification on my end:** `attempted=13 clicked=13 errors=0` across dailyset+exploreonbing+moreactivities on both desktop and mobile passes. `+100` point desktop delta preserved. No timeouts, no selector misses.
+
+**Backward compatible.** Existing users see zero behavioural change on old-UI accounts (feature-detects the new UI first). Users on new-UI accounts will start seeing more points harvested per run automatically — no config toggle needed.
+
+---
+
 ## What's new in 2.11.9
 
 **Fix: MS Rewards ran despite the parent toggle being off — parent-gate semantic broken by an OR check + `microsoft-mobile.defaultActive: true`.**

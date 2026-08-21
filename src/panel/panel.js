@@ -1872,12 +1872,8 @@ let nextAwaRun = null;        // Date | null — Alienware Arena wake
 let msTodayState = null;      // last-read MS schedule state, for getState()
 let awaTodayState = null;     // last-read AWA schedule state, for getState()
 
-<<<<<<< HEAD:src/panel/panel.js
 const MS_SCHEDULE_FILE = dataDir('ms-schedule-today.json');
-=======
-const MS_SCHEDULE_FILE = path.resolve(__panelDirname, 'data', 'ms-schedule-today.json');
 const AWA_SCHEDULE_FILE = path.resolve(__panelDirname, 'data', 'awa-schedule-today.json');
->>>>>>> 920b61d (Add custom service stats for SteamGifts and Alienware Arena):interactive-login.js
 
 function todayKey(d = new Date()) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');

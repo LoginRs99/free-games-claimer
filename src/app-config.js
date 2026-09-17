@@ -130,6 +130,8 @@ export const CONFIG_SCHEMA = [
   { path: 'scheduler.startJitterMinutes', env: 'START_JITTER', type: 'number', default: 0,
     coerce: v => Math.max(0, Math.round(Number(v) || 0)),
     validate: v => Number.isInteger(v) && v >= 0 && v <= 720 ? null : 'expected whole minutes 0-720' },
+  { path: 'scheduler.awaScheduleHours', env: 'AWA_SCHEDULE_HOURS', type: 'number', default: 0, coerce: v => Number(v) || 0 },
+  { path: 'scheduler.awaScheduleStart', env: 'AWA_SCHEDULE_START', type: 'number', default: 8, coerce: v => Number(v) || 0 },
   // 0 = off, 1 = run claim chain after startup auto-check (panel keeps
   // running), 2 = run + exit (one-shot for Sablier / cron / `docker run --rm`).
   { path: 'scheduler.runOnStartup',    env: 'RUN_ON_STARTUP',    type: 'number',  default: 0, coerce: v => {
@@ -543,6 +545,8 @@ export function getSchedulerConfig() {
     // Live read — the panel's cfg.ms_run_with_main_chain is a module-load
     // snapshot, so toggling it in Settings needed a restart (#189).
     msRunWithMainChain: !!describeConfig().effective.services?.microsoft?.runWithMainChain,
+    awaHours:        s.awaScheduleHours ?? 0,
+    awaStart:        s.awaScheduleStart ?? 8,
   };
 }
 

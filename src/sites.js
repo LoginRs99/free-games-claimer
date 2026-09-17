@@ -825,6 +825,75 @@ export const SITES = [
     ],
     checkLogin: null,
   },
+  {
+    id: 'alienware-arena',
+    name: 'Alienware Arena',
+    version: '0.1',
+    subtitle: 'Maintains AWA control-center presence, then watches configured Twitch streamers until the daily watch-time target is reached. Sign in once through the Sessions tab.',
+    script: platformScript('alienware-arena'),
+    claimOrder: 12,
+    loginUrl: 'https://eu.alienwarearena.com/control-center',
+    homeUrl: 'https://eu.alienwarearena.com/control-center',
+    get browserDir() { return cfg.dir.browser + '-alienware-arena'; },
+    contextOptions: null,
+    defaultActive: false,
+    activeEnv: 'AWA_ACTIVE',
+    linkedWith: null,
+    claimDbFile: null,
+    scheduleKind: 'daily-window',
+    features: ['captcha-marker'],
+    configFields: [
+      { key: 'presenceMinutes', env: 'AWA_PRESENCE_MINUTES', type: 'number', default: 30,
+        label: 'AWA presence time',
+        unit: 'minutes',
+        coerce: { kind: 'numberBounded', min: 0, fallback: 30 } },
+      { key: 'dailyTargetMinutes', env: 'AWA_DAILY_TARGET_MINUTES', type: 'number', default: 250,
+        label: 'Daily watch-time target',
+        unit: 'minutes',
+        hint: 'Target Twitch watch time for the day. AWA control-center presence is separate and does not count toward this number.',
+        coerce: { kind: 'numberBounded', min: 1, fallback: 250 } },
+      { key: 'arpTarget', env: 'AWA_ARP_TARGET', type: 'number', default: 0,
+        label: 'ARP target',
+        unit: 'ARP',
+        hint: 'When the detected ARP balance is at or above this value, scheduled Alienware Arena runs skip. 0 disables the target gate.',
+        coerce: { kind: 'numberBounded', min: 0, fallback: 0 } },
+      { key: 'watchChunkMinutes', env: 'AWA_WATCH_CHUNK_MINUTES', type: 'number', default: 30,
+        label: 'Twitch watch chunk',
+        unit: 'minutes',
+        hint: 'The script watches one live streamer for this many minutes, then re-checks the daily target and live list.',
+        coerce: { kind: 'numberBounded', min: 1, fallback: 30 } },
+      { key: 'twitchRecheckMinutes', env: 'AWA_TWITCH_RECHECK_MINUTES', type: 'number', default: 10,
+        label: 'Twitch live recheck interval',
+        unit: 'minutes',
+        hint: 'When nobody in the configured list is live, Alienware Arena stays running and checks Twitch again after this delay.',
+        coerce: { kind: 'numberBounded', min: 1, fallback: 10 } },
+      { key: 'twitchStreamers', env: 'AWA_TWITCH_STREAMERS', type: 'string',
+        default: '3llebelle,BiffleTV,PirateGray,FooYa,RogersBase,TheGeekEntry,Layria,MatthewSantoro,Lovinurstyle,Liddles,TrishaHershberger,Mactics,MoonlitCharlie',
+        label: 'Twitch streamers',
+        hint: 'Comma-separated Twitch logins. Set TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET env vars for accurate live checks.' },
+      { schedulerScope: true, path: 'scheduler.awaScheduleHours',
+        label: 'AWA schedule window width',
+        unit: 'hours',
+        hint: 'Independent daily Alienware Arena window. Works like the Microsoft Rewards window.' },
+      { schedulerScope: true, path: 'scheduler.awaScheduleStart',
+        label: 'AWA schedule window start',
+        kind: 'hour-of-day' },
+    ],
+    async checkLogin(page) {
+      try {
+        await page.goto('https://eu.alienwarearena.com/control-center', { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await page.waitForTimeout(2500);
+        const loggedIn = await page.locator('[data-is-logged-in="true"], a[href="/quests"]').first().count();
+        if (loggedIn > 0) {
+          const user = await page.locator('.media-body, .username, [class*="username"]').first().innerText({ timeout: 2000 }).catch(() => 'member');
+          return { loggedIn: true, user: user?.trim() || 'member' };
+        }
+        return { loggedIn: false };
+      } catch {
+        return { loggedIn: false };
+      }
+    },
+  },
 ];
 
 export const SITES_BY_ID = Object.fromEntries(SITES.map(s => [s.id, s]));

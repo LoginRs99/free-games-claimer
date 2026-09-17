@@ -8,6 +8,8 @@ on:
       - 'feat/**'
       - 'fix/**'
       - 'refactor/**'
+      - 'custom/**'
+      - 'codex/**'
     tags:
       - 'v*.*.*'
   workflow_dispatch:

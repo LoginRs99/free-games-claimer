@@ -21,6 +21,7 @@ const steam = svc['steam']        || {};
 const ae    = svc['aliexpress']   || {};
 const ms    = svc['microsoft']    || {};
 const lenovo = svc['lenovo-gaming'] || {};
+const awa   = svc['alienware-arena'] || {};
 
 // LANG is POSIX (e.g. de_DE.UTF-8); Playwright wants a BCP-47 tag (de-DE).
 // Strip the encoding, swap _ → -. C / POSIX / unparsable → '' (caller falls
@@ -92,6 +93,8 @@ export const cfg = {
   daily_start_time: sched.dailyStartTime ?? '',
   ms_schedule_hours: sched.msScheduleHours ?? 0,
   ms_schedule_start: sched.msScheduleStart ?? 8,
+  awa_schedule_hours: sched.awaScheduleHours ?? 0,
+  awa_schedule_start: sched.awaScheduleStart ?? 8,
   // 0 = off, 1 = run on startup, 2 = run on startup then exit (one-shot).
   run_on_startup: sched.runOnStartup ?? 0,
   get dir() { // avoids ReferenceError: Cannot access 'dataDir' before initialization
@@ -135,6 +138,15 @@ export const cfg = {
   // games with zero reviews (assumed shovelware). Turn off to catch
   // launch-day indies before they have reviews. See #61.
   steam_skip_unrated: steam.skipUnrated ?? true,
+  // alienware arena / AWA Twitch watch time
+  awa_presence_minutes: awa.presenceMinutes ?? 30,
+  awa_daily_target_minutes: awa.dailyTargetMinutes ?? 250,
+  awa_arp_target: awa.arpTarget ?? 0,
+  awa_watch_chunk_minutes: awa.watchChunkMinutes ?? 30,
+  awa_twitch_recheck_minutes: awa.twitchRecheckMinutes ?? 10,
+  awa_twitch_streamers: awa.twitchStreamers || '3llebelle,BiffleTV,PirateGray,FooYa,RogersBase,TheGeekEntry,Layria,MatthewSantoro,Lovinurstyle,Liddles,TrishaHershberger,Mactics,MoonlitCharlie',
+  awa_twitch_client_id: process.env.TWITCH_CLIENT_ID,
+  awa_twitch_client_secret: process.env.TWITCH_CLIENT_SECRET,
   // auth microsoft rewards
   ms_email: process.env.MS_EMAIL || process.env.EMAIL,
   ms_password: process.env.MS_PASSWORD || process.env.PASSWORD,

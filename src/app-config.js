@@ -122,6 +122,8 @@ export const CONFIG_SCHEMA = [
       if (new Set(v).size !== v.length) return 'duplicate days not allowed';
       return null;
     } },
+  { path: 'scheduler.awaScheduleHours', env: 'AWA_SCHEDULE_HOURS', type: 'number', default: 0, coerce: v => Number(v) || 0 },
+  { path: 'scheduler.awaScheduleStart', env: 'AWA_SCHEDULE_START', type: 'number', default: 8, coerce: v => Number(v) || 0 },
   // 0 = off, 1 = run claim chain after startup auto-check (panel keeps
   // running), 2 = run + exit (one-shot for Sablier / cron / `docker run --rm`).
   { path: 'scheduler.runOnStartup',    env: 'RUN_ON_STARTUP',    type: 'number',  default: 0, coerce: v => {
@@ -479,6 +481,8 @@ export function getSchedulerConfig() {
     msHours:         s.msScheduleHours ?? 0,
     msStart:         s.msScheduleStart ?? 8,
     dailyStartDays:  days,
+    awaHours:        s.awaScheduleHours ?? 0,
+    awaStart:        s.awaScheduleStart ?? 8,
   };
 }
 

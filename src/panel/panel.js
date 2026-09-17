@@ -2060,9 +2060,13 @@ const MS_SCHEDULE_START = cfg.ms_schedule_start;
 
 let nextMainRun = null;       // Date | null — main chain wake
 let nextMsRun = null;         // Date | null — MS-only wake (decoupled mode)
+let nextAwaRun = null;        // Date | null — Alienware Arena wake
 let msTodayState = null;      // last-read MS schedule state, for getState()
+let awaTodayState = null;     // last-read AWA schedule state, for getState()
 
+const INDEPENDENT_SCHEDULED_SITE_IDS = new Set(['alienware-arena']);
 const MS_SCHEDULE_FILE = dataDir('ms-schedule-today.json');
+const AWA_SCHEDULE_FILE = dataDir('awa-schedule-today.json');
 
 function todayKey(d = new Date()) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -2074,50 +2078,61 @@ function nextDayKey(key) {
   return todayKey(dt);
 }
 
-function readMsScheduleToday() {
+function readDailyWindowState(file) {
   try {
-    if (!existsSync(MS_SCHEDULE_FILE)) return null;
-    const raw = readFileSync(MS_SCHEDULE_FILE, 'utf8');
+    if (!existsSync(file)) return null;
+    const raw = readFileSync(file, 'utf8');
     if (!raw.trim()) return null;
     const p = JSON.parse(raw);
     if (!p || !p.date || !p.target || !p.status) return null;
     return p;
   } catch { return null; }
 }
-function writeMsScheduleToday(state) {
+function writeDailyWindowState(file, state, label) {
   try {
-    mkdirSync(path.dirname(MS_SCHEDULE_FILE), { recursive: true });
-    writeFileSync(MS_SCHEDULE_FILE, JSON.stringify(state, null, 2) + '\n');
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(state, null, 2) + '\n');
   } catch (e) {
-    console.error(`[${datetime()}] Scheduler (MS): failed to persist schedule: ${e.message}`);
+    console.error(`[${datetime()}] Scheduler (${label}): failed to persist schedule: ${e.message}`);
   }
 }
-function pickMsTargetFor(dateKey, c) {
+
+function readMsScheduleToday() {
+  return readDailyWindowState(MS_SCHEDULE_FILE);
+}
+function writeMsScheduleToday(state) {
+  writeDailyWindowState(MS_SCHEDULE_FILE, state, 'MS');
+}
+function readAwaScheduleToday() {
+  return readDailyWindowState(AWA_SCHEDULE_FILE);
+}
+function writeAwaScheduleToday(state) {
+  writeDailyWindowState(AWA_SCHEDULE_FILE, state, 'AWA');
+}
+
+function pickWindowTargetFor(dateKey, startHour, windowHours) {
   const [y, m, d] = dateKey.split('-').map(Number);
   const target = new Date(y, m - 1, d);
-  const startHour = c.msStart;
-  // When picking for today and we're already inside the window, constrain
-  // the random offset to the *remaining* window — otherwise a uniform pick
-  // can land in the past on first boot mid-window, and the immediate
-  // pending+past check marks it missed before it ever ran (issue #47).
-  // For a future day, the full window is fair game as before.
   const now = Date.now();
   const windowStart = new Date(y, m - 1, d, startHour, 0, 0, 0).getTime();
-  const windowEnd = windowStart + c.msHours * 3600 * 1000;
+  const windowEnd = windowStart + windowHours * 3600 * 1000;
   let minOffsetMin = 0;
-  let maxOffsetMin = c.msHours * 60;
+  let maxOffsetMin = windowHours * 60;
   if (dateKey === todayKey() && now > windowStart && now < windowEnd) {
-    // 60s floor so the very first wake isn't a no-op tight-loop.
     minOffsetMin = Math.ceil((now - windowStart) / 60000) + 1;
-    // If the floor sits at or past the ceiling, leave it equal — the
-    // boot-time recovery in computeMsWakeMs will still reschedule the
-    // remaining-window pick (sub-case 2) or mark missed (sub-case 3).
     if (minOffsetMin >= maxOffsetMin) minOffsetMin = maxOffsetMin - 1;
   }
   const span = Math.max(1, maxOffsetMin - minOffsetMin);
   const offsetMinutes = minOffsetMin + Math.floor(Math.random() * span);
   target.setHours(startHour, offsetMinutes, 0, 0);
   return { date: dateKey, target: target.toISOString(), status: 'pending' };
+}
+
+function pickMsTargetFor(dateKey, c) {
+  return pickWindowTargetFor(dateKey, c.msStart, c.msHours);
+}
+function pickAwaTargetFor(dateKey, c) {
+  return pickWindowTargetFor(dateKey, c.awaStart, c.awaHours);
 }
 
 // Per-service last-success-run timestamps. Updated when service scripts
@@ -2408,6 +2423,43 @@ function computeMsWakeMs() {
   return 0;
 }
 
+function computeAwaWakeMs() {
+  const c = getSchedulerConfig();
+  const active = activeServices();
+  if (!active.has('alienware-arena') || c.awaHours <= 0) { awaTodayState = null; return 0; }
+
+  const now = Date.now();
+  for (let safety = 0; safety < 14; safety++) {
+    let st = readAwaScheduleToday();
+    const today = todayKey();
+    const needsFresh = !st
+      || st.date < today
+      || (st.date === today && (st.status === 'fired' || st.status === 'missed'));
+    if (needsFresh) {
+      const day = (!st || st.date < today) ? today : nextDayKey(today);
+      st = pickAwaTargetFor(day, c);
+      writeAwaScheduleToday(st);
+    }
+    awaTodayState = st;
+    const target = new Date(st.target).getTime();
+    if (!Number.isFinite(target)) {
+      st = pickAwaTargetFor(todayKey(), c);
+      writeAwaScheduleToday(st);
+      awaTodayState = st;
+      continue;
+    }
+    if (st.status === 'pending' && target <= now) {
+      st.status = 'missed';
+      writeAwaScheduleToday(st);
+      continue;
+    }
+    return Math.max(target - now, 60 * 1000);
+  }
+  console.error(`[${datetime()}] Scheduler (AWA): pick loop exhausted, disabling.`);
+  awaTodayState = null;
+  return 0;
+}
+
 // Multi-subscriber wakeup set — both schedulerLoops park in sleepUntilWakeup,
 // and any of them must re-arm when config changes.
 const schedulerWakeups = new Set();
@@ -2499,6 +2551,72 @@ function withScheduleLock(fn) {
   return previous.then(fn).finally(() => release());
 }
 
+const detachedRuns = new Map();
+function appendDetachedRunLog(label, type, text) {
+  const lines = String(text || '').split(/\r?\n/).filter(l => l.length);
+  for (const l of lines) {
+    if (/^\s*\[run\]\s/.test(l)) continue;
+    const isSection = /^───/.test(l);
+    const isHeader = /^===/.test(l);
+    runLog.push({ type, text: `[${label}] ${l}`, time: (isSection || isHeader) ? null : datetime() });
+  }
+}
+
+function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
+  if (!sites || !sites.length) return { success: false, error: 'No service specified.' };
+  if (detachedRuns.has(label)) {
+    console.log(`[${datetime()}] Scheduler (${label}): previous run still active — skipping this tick.`);
+    return { success: false, error: `${label} is already running.` };
+  }
+  const cmd = resolveClaimCommand({ manual: false, sites });
+  if (!cmd) {
+    console.log(`[${datetime()}] Scheduler (${label}): no command resolved — skipping.`);
+    return { success: false, error: `No command resolved for ${label}.` };
+  }
+  const env = { ...process.env, NOWAIT: '1', ...extraEnv };
+  console.log(`[${datetime()}] Scheduler (${label}): starting detached run: ${cmd}`);
+  runLog.push({ type: 'system', text: `Detached run (${label}) started: ${cmd}`, time: datetime() });
+  const child = spawn('bash', ['-c', cmd], {
+    cwd: rootDir(''),
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  detachedRuns.set(label, { child, sites: sites.slice(), startedAt: datetime() });
+  const onData = data => {
+    const text = data.toString();
+    process.stdout.write(text);
+    appendDetachedRunLog(label, 'stdout', text);
+    for (const m of text.matchAll(/\[run\]\s+service=([a-z0-9-]+)\s+ok\b/g)) {
+      recordLastRunSuccess(m[1]);
+    }
+  };
+  child.stdout.on('data', onData);
+  child.stderr.on('data', data => {
+    const text = data.toString();
+    process.stderr.write(text);
+    appendDetachedRunLog(label, 'stderr', text);
+  });
+  child.on('close', code => {
+    detachedRuns.delete(label);
+    runLog.push({ type: 'system', text: `Detached run (${label}) exited with code ${code}`, time: datetime() });
+    console.log(`[${datetime()}] Scheduler (${label}): detached run exited with code ${code}.`);
+    if (code === 0 && typeof markFired === 'function') markFired();
+  });
+  return { success: true, detached: true };
+}
+
+function stopDetachedRun(label) {
+  const run = detachedRuns.get(label);
+  if (!run || !run.child) return { success: false, error: `${label} is not running.` };
+  try {
+    run.child.kill('SIGTERM');
+    runLog.push({ type: 'system', text: `Detached run (${label}) stop requested by user.`, time: datetime() });
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
 async function fireScheduledRun({ label, sites, extraEnv, postRun }) {
   // Pause guard (v2.11.0). Skip-and-log; missed runs do NOT retro-fire
   // on resume — user manually triggers via per-service Run buttons.
@@ -2537,6 +2655,7 @@ function nonMsActiveSiteIds() {
   const active = activeServices();
   active.delete('microsoft');
   active.delete('microsoft-mobile');
+  active.delete('alienware-arena');
   return Array.from(active);
 }
 
@@ -2692,6 +2811,39 @@ async function msSchedulerLoop() {
         }
       }
     }
+  }
+}
+
+async function awaSchedulerLoop() {
+  while (true) {
+    const sleepMs = computeAwaWakeMs();
+    if (sleepMs <= 0) {
+      nextAwaRun = null;
+      console.log(`[${datetime()}] Scheduler (AWA): disabled — waiting for config change.`);
+      await sleepUntilWakeup(2 ** 31 - 1);
+      continue;
+    }
+    nextAwaRun = new Date(Date.now() + sleepMs);
+    console.log(`[${datetime()}] Scheduler (AWA): next run at ${datetime(nextAwaRun)}.`);
+    const how = await sleepUntilWakeup(sleepMs);
+    if (how === 'reload') continue;
+
+    const c = getSchedulerConfig();
+    if (!activeServices().has('alienware-arena') || c.awaHours <= 0) continue;
+    const st = readAwaScheduleToday();
+    if (!st || st.status !== 'pending') continue;
+
+    fireDetachedScheduledRun({
+      label: 'alienware-arena',
+      sites: ['alienware-arena'],
+      markFired: () => {
+        const cur = readAwaScheduleToday();
+        if (cur && cur.date === todayKey() && cur.status === 'pending') {
+          cur.status = 'fired';
+          writeAwaScheduleToday(cur);
+        }
+      },
+    });
   }
 }
 
@@ -3034,21 +3186,33 @@ async function getState() {
   // users who never touched it) kept MS running even when parent was
   // toggled off. Reported live 2026-08-08.
   const msActive = active.has('microsoft');
+  const awaScheduled = active.has('alienware-arena') && sched.awaHours > 0;
   const legacyMode = legacyCombinedMode(sched, active);
   const dailyAnchored = !!sched.dailyStartTime;
   const mainEnabled = legacyMode || dailyAnchored || sched.loop > 0;
   const msScheduled = !legacyMode && msActive && sched.msHours > 0;
-  const schedEnabled = mainEnabled || msScheduled;
+  const schedEnabled = mainEnabled || msScheduled || awaScheduled;
 
   const computedMain = mainEnabled ? new Date(Date.now() + computeMainWakeMs()) : null;
   const computedMs = msScheduled ? new Date(Date.now() + computeMsWakeMs()) : null;
+  const computedAwa = awaScheduled ? new Date(Date.now() + computeAwaWakeMs()) : null;
   const effectiveMain = nextMainRun || computedMain;
   const effectiveMs = nextMsRun || computedMs;
-  const effectiveNext = [effectiveMain, effectiveMs]
+  const effectiveAwa = nextAwaRun || computedAwa;
+  const effectiveNext = [effectiveMain, effectiveMs, effectiveAwa]
     .filter(Boolean)
     .reduce((a, b) => (!a || b.getTime() < a.getTime() ? b : a), null);
 
   const msState = msScheduled ? (msTodayState || readMsScheduleToday()) : null;
+  const awaState = awaScheduled ? (awaTodayState || readAwaScheduleToday()) : null;
+
+  const detachedRunList = Array.from(detachedRuns.entries()).map(([label, r]) => ({
+    label,
+    sites: Array.isArray(r.sites) ? r.sites : [],
+    startedAt: r.startedAt || null,
+  }));
+
+  const detachedRunningIds = new Set(detachedRunList.flatMap(r => r.sites));
 
   return {
     // v2.11.12: Web-UI auth state — the client refreshes AUTH_ENABLED
@@ -3072,6 +3236,7 @@ async function getState() {
       // sites where it's already a useful destination (Prime, GOG,
       // MS, AliExpress all have homeUrl == loginUrl semantically).
       siteUrl: site.homeUrl || site.loginUrl || null,
+      detachedRunning: detachedRunningIds.has(id),
       ...siteStatus[id],
     })),
     // Active watch-only collectors (scheduleKind: 'watch-only'). They are
@@ -3087,27 +3252,32 @@ async function getState() {
     runStatus,
     runSource,
     runLogLength: runLog.length,
+    detachedRuns: detachedRunList,
     // Server-local timestamps (legacy fields — naked strings, no TZ marker).
     // Kept for any external /api/state consumers; the panel now prefers
     // the *Iso fields below for accurate display + countdown across TZs.
     nextScheduledRun: effectiveNext ? datetime(effectiveNext) : null,
     nextMainRun: effectiveMain ? datetime(effectiveMain) : null,
     nextMsRun: effectiveMs ? datetime(effectiveMs) : null,
+    nextAwaRun: effectiveAwa ? datetime(effectiveAwa) : null,
     // ISO timestamps (UTC with Z) — unambiguous across browser/server TZs.
     // Panel uses these for both display formatting and countdown math so a
     // browser in a different TZ from the server sees the right wall time.
     nextScheduledRunIso: effectiveNext ? effectiveNext.toISOString() : null,
     nextMainRunIso: effectiveMain ? effectiveMain.toISOString() : null,
     nextMsRunIso: effectiveMs ? effectiveMs.toISOString() : null,
+    nextAwaRunIso: effectiveAwa ? effectiveAwa.toISOString() : null,
     serverTimezone: (() => {
       try { return Intl.DateTimeFormat().resolvedOptions().timeZone; }
       catch { return null; }
     })(),
     serverTimeIso: new Date().toISOString(),
     msTodayStatus: msState ? msState.status : null,
+    awaTodayStatus: awaState ? awaState.status : null,
     legacyCombinedMode: legacyMode,
     mainEnabled,
     msScheduled,
+    awaScheduled,
     loopEnabled: schedEnabled,
     schedulerPaused: isSchedulerPaused(),
     schedulerPausedAt: schedulerPausedAt(),
@@ -3402,8 +3572,53 @@ async function getAliexpressData() {
   return { latestBalance, latestAt, weekEarned, monthEarned, row };
 }
 
+async function getAlienwareArenaData() {
+  let db;
+  try { db = await jsonDb('alienware-arena.json', { days: {} }); }
+  catch { return { latestArp: null, latestAt: null, row: null, activity: [] }; }
+  const days = db.data && db.data.days && typeof db.data.days === 'object' ? db.data.days : {};
+  const now = Date.now();
+  const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  const monthAgo = now - 30 * 24 * 60 * 60 * 1000;
+  const toMs = s => { const d = parseLocalDateTime(s); return d ? d.getTime() : 0; };
+  const row = { thisWeek: 0, thisMonth: 0, allTime: 0, lastClaimAt: null, unit: 'minutes' };
+  const activity = [];
+  for (const [day, rec] of Object.entries(days)) {
+    if (!rec || typeof rec !== 'object') continue;
+    const sessions = Array.isArray(rec.sessions) ? rec.sessions : [];
+    for (const s of sessions) {
+      const tMs = toMs(s.time);
+      const minutes = Number.isFinite(s.minutes) ? Math.max(0, s.minutes) : 0;
+      if (!tMs || !minutes) continue;
+      row.allTime += minutes;
+      if (tMs >= weekAgo) row.thisWeek += minutes;
+      if (tMs >= monthAgo) row.thisMonth += minutes;
+      if (!row.lastClaimAt || tMs > toMs(row.lastClaimAt)) row.lastClaimAt = s.time;
+      activity.push({
+        at: parseLocalDateTime(s.time),
+        service: 'alienware-arena',
+        title: `${s.platform || 'AWA'}: ${s.details || day}`,
+        url: null,
+        status: `${Math.round(minutes)} minutes`,
+      });
+    }
+  }
+  const latest = db.data && db.data.latestArp;
+  return {
+    latestArp: latest && latest.value != null ? latest.value : null,
+    latestAt: latest && latest.time ? latest.time : null,
+    row: row.allTime ? {
+      ...row,
+      thisWeek: Math.round(row.thisWeek),
+      thisMonth: Math.round(row.thisMonth),
+      allTime: Math.round(row.allTime),
+    } : null,
+    activity,
+  };
+}
+
 async function getStatsSummary() {
-  const [claims, ms] = await Promise.all([readAllClaims(), getMsRewards()]);
+  const [claims, ms, awa] = await Promise.all([readAllClaims(), getMsRewards(), getAlienwareArenaData()]);
   const now = Date.now();
   const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
   const monthAgo = now - 30 * 24 * 60 * 60 * 1000;
@@ -3426,11 +3641,14 @@ async function getStatsSummary() {
     msPointsBalanceAt: ms.latestAt,
     msPointsThisWeek: ms.weekEarned,
     msPointsThisMonth: ms.monthEarned,
+    awaArpBalance: awa.latestArp,
+    awaArpBalanceAt: awa.latestAt,
+    awaMinutesThisWeek: awa.row ? awa.row.thisWeek : 0,
   };
 }
 
 async function getStatsByService() {
-  const [claims, ms, ae] = await Promise.all([readAllClaims(), getMsRewards(), getAliexpressData()]);
+  const [claims, ms, ae, awa] = await Promise.all([readAllClaims(), getMsRewards(), getAliexpressData(), getAlienwareArenaData()]);
   const rows = {};
   for (const svc of Object.keys(CLAIM_DB_FILES)) {
     rows[svc] = { id: svc, unit: 'games', thisWeek: 0, thisMonth: 0, allTime: 0, lastClaimAt: null };
@@ -3441,6 +3659,7 @@ async function getStatsByService() {
   if (ae.row) {
     rows['aliexpress'] = { id: 'aliexpress', ...ae.row };
   }
+  rows['alienware-arena'] = { id: 'alienware-arena', ...(awa.row || { thisWeek: 0, thisMonth: 0, allTime: 0, lastClaimAt: null, unit: 'minutes' }) };
   const now = Date.now();
   const weekAgo = now - 7 * 24 * 60 * 60 * 1000;
   const monthAgo = now - 30 * 24 * 60 * 60 * 1000;
@@ -3505,9 +3724,11 @@ async function getStatsDaily(days = 30) {
 }
 
 async function getActivity(limit = 10) {
-  const claims = await readAllClaims();
-  claims.sort((a, b) => b.at - a.at);
-  return claims.slice(0, limit).map(c => ({
+  const [claims, awa] = await Promise.all([readAllClaims(), getAlienwareArenaData()]);
+  const activity = claims.concat(awa.activity || [])
+    .filter(c => c && c.at && Number.isFinite(c.at.getTime()));
+  activity.sort((a, b) => b.at - a.at);
+  return activity.slice(0, limit).map(c => ({
     at: datetime(c.at),
     service: c.service,
     serviceName: (SITES[c.service] && SITES[c.service].name) || DISCOVERY_DISPLAY_NAMES[c.service] || c.service,
@@ -4398,6 +4619,7 @@ const PANEL_HTML = `<!DOCTYPE html>
   <div class="steps sessions-only" id="steps"></div>
   <div class="status-strip sessions-only" id="statusStrip" onclick="toggleSessionsCollapsed()" title="Click to collapse session details"></div>
   <div class="site-cards sessions-only" id="siteCards"></div>
+  <div class="watcher-section sessions-only" id="customFarmCards" style="display:none"></div>
   <div class="watcher-section sessions-only" id="watcherCards" style="display:none"></div>
   <div class="available-drawer sessions-only" id="availableDrawer" style="display:none"></div>
   <div class="sessions-only" id="batchRedeemInfo" style="display:none; margin-top: 10px;"></div>
@@ -7166,6 +7388,9 @@ async function renderStatsTab() {
       { label: 'MS points this week',
         value: msPending ? 'Pending' : fmt(summary.msPointsThisWeek),
         hint:  msPending ? 'captured on next microsoft run' : 'via captured runs' },
+      { label: 'AWA ARP',
+        value: summary.awaArpBalance == null ? 'Pending' : fmt(summary.awaArpBalance),
+        hint:  summary.awaArpBalanceAt ? 'as of ' + formatTimestamp(summary.awaArpBalanceAt, 'short') : 'captured on next Alienware Arena run' },
     ];
     kpis.innerHTML = tiles.map(k =>
       '<div class="kpi"><div class="kpi-label">' + k.label + '</div>' +
@@ -7175,12 +7400,14 @@ async function renderStatsTab() {
     ).join('');
 
     const fmt2 = n => new Intl.NumberFormat().format(n);
-    const unitSuffix = u => u === 'points' ? ' pts' : u === 'coins' ? ' coins' : '';
+    const unitSuffix = u => u === 'points' ? ' pts' : u === 'coins' ? ' coins' : u === 'minutes' ? ' min' : '';
     const unitPlaceholder = u => u === 'points'
       ? 'points-based — balance appears after the next microsoft run'
       : u === 'coins'
         ? 'coins-based — appears after enabling AliExpress and running once'
-        : u + '-based';
+        : u === 'minutes'
+          ? 'tracked minutes appear after the next Alienware Arena run'
+          : u + '-based';
     const rows = byService.map(r => {
       const last = r.lastClaimAt
         ? '<span title="' + escapeHtml(r.lastClaimAt) + '">' + escapeHtml(formatTimestamp(r.lastClaimAt, 'relative')) + '</span>'
@@ -7359,8 +7586,29 @@ function renderScheduleTab() {
       parts.push('<div class="sched-row"><div class="sched-label">Interval · MS Rewards</div><div class="sched-value muted">Random within ' + fmtH(s) + ' &rarr; ' + fmtH((Number(s) + Number(w)) % 24) + ' daily</div></div>');
     }
 
-    if (!state.mainEnabled && !state.msScheduled) {
-      parts.push('<div class="sched-row"><div class="sched-label">Status</div><div class="sched-value muted">Scheduler disabled — set START_TIME, LOOP, or MS_SCHEDULE_HOURS to enable.</div></div>');
+    if (state.awaScheduled) {
+      const statusBadge = state.awaTodayStatus === 'missed'
+        ? ' <span class="muted">(missed today — Run manually from the AWA card)</span>'
+        : state.awaTodayStatus === 'fired'
+          ? ' <span class="muted">(today already fired)</span>'
+          : '';
+      if (state.nextAwaRun) {
+        parts.push(
+          '<div class="sched-row"><div class="sched-label">Next run · Alienware Arena</div>' +
+          '<div><span class="sched-value big" title="' + state.nextAwaRun + '">' + formatScheduleWallTime(state.nextAwaRunIso, state.nextAwaRun) + '</span>' +
+          tzAnnotation(state.nextAwaRunIso) +
+          '<span class="sched-count" id="awaCountdown"></span>' + statusBadge + '</div></div>'
+        );
+      } else {
+        parts.push('<div class="sched-row"><div class="sched-label">Next run · Alienware Arena</div><div class="sched-value muted">Calculating…</div></div>');
+      }
+      const s = state.awaScheduleStart || 0;
+      const w = state.awaScheduleHours;
+      parts.push('<div class="sched-row"><div class="sched-label">Interval · Alienware Arena</div><div class="sched-value muted">Random within ' + fmtH(s) + ' &rarr; ' + fmtH((Number(s) + Number(w)) % 24) + ' daily</div></div>');
+    }
+
+    if (!state.mainEnabled && !state.msScheduled && !state.awaScheduled) {
+      parts.push('<div class="sched-row"><div class="sched-label">Status</div><div class="sched-value muted">Scheduler disabled — set START_TIME, LOOP, or MS/AWA schedule hours to enable.</div></div>');
     }
   }
 
@@ -7373,6 +7621,7 @@ function renderScheduleTab() {
   const activeGames = sites.filter(s => s.active && GAME_IDS.has(s.id));
   const hasAE = sites.some(s => s.active && s.id === 'aliexpress');
   const hasMS = sites.some(s => s.active && s.id === 'microsoft');
+  const hasAWA = sites.some(s => s.active && s.id === 'alienware-arena');
   // Watchers are in state.watchers (not state.sites). They run on each
   // main-chain fire as part of the bash command — listing them in the
   // Services breakdown so the Schedule tab reflects the actual daily run.
@@ -7384,6 +7633,7 @@ function renderScheduleTab() {
   const byName = (a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
   standardWatchers.sort(byName);
   const activeCount = activeGames.length + (hasAE ? 1 : 0) + (hasMS ? 1 : 0)
+    + (hasAWA ? 1 : 0)
     + standardWatchers.length + (lenovoWatcher ? 1 : 0);
 
   const svcLines = [];
@@ -7401,6 +7651,9 @@ function renderScheduleTab() {
     } else {
       svcLines.push('<b>Microsoft Rewards</b> — runs searches immediately (no window)');
     }
+  }
+  if (hasAWA) {
+    svcLines.push('<b>Alienware Arena</b> — AWA/Twitch farming <span class="muted">(independent daily window)</span>');
   }
   if (standardWatchers.length) {
     svcLines.push('<b>' + standardWatchers.map(w => escapeHtml(w.name)).join(', ') + '</b> — watch and notify on new free items <span class="muted">(no auto-claim)</span>');
@@ -7426,10 +7679,9 @@ function renderScheduleTab() {
     parts.push(
       '<div class="sched-row"><div class="sched-label">Last run</div>' +
       '<div class="sched-value"><span title="' + state.lastRun.at + '">' + formatScheduleWallTime(state.lastRun.atIso, state.lastRun.at) + '</span>' +
-        tzAnnotation(state.lastRun.atIso) +
-        ' (' + state.lastRun.source + ') — ' +
-        '<span style="color:' + statusCol + '">' + state.lastRun.status + '</span>' +
-        (dur ? ' · ' + dur : '') +
+      tzAnnotation(state.lastRun.atIso) +
+      '<span class="sched-count" style="color:' + statusCol + '">' + state.lastRun.status + '</span>' +
+      (dur ? ' <span class="muted">(' + dur + ')</span>' : '') +
       '</div></div>'
     );
   } else {
@@ -7467,6 +7719,7 @@ function updateScheduleCountdown() {
   apply('schedCountdown', state.nextScheduledRunIso, state.nextScheduledRun);
   apply('mainCountdown',  state.nextMainRunIso,      state.nextMainRun);
   apply('msCountdown',    state.nextMsRunIso,        state.nextMsRun);
+  apply('awaCountdown',   state.nextAwaRunIso,       state.nextAwaRun);
 }
 
 // Format an ISO timestamp into a server-local-tz wall clock for display.
@@ -8335,10 +8588,12 @@ function render() {
   // Sort each group alphabetically by name so the visual order is stable
   // and predictable across all card groupings on the Sessions tab.
   const byName = (a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
-  const activeCards = state.sites.filter(s => s.active !== false).slice().sort(byName);
+  const customFarmIds = new Set(['alienware-arena']);
+  const activeCards = state.sites.filter(s => s.active !== false && !customFarmIds.has(s.id)).slice().sort(byName);
+  const customFarmCards = state.sites.filter(s => s.active !== false && customFarmIds.has(s.id)).slice().sort(byName);
   const inactiveCards = state.sites.filter(s => s.active === false).slice().sort(byName);
 
-  cards.innerHTML = activeCards.map(s => {
+  const renderSessionCard = s => {
     const dotClass = s.status === 'logged_in' ? 'logged-in' : s.status === 'not_logged_in' ? 'not-logged-in' : s.status === 'error' ? 'error' : 'unknown';
     const statusClass = dotClass;
     let statusText = 'Not checked';
@@ -8347,6 +8602,7 @@ function render() {
     else if (s.status === 'error') statusText = 'Error checking.';
     if (s.lastSuccessfulRun) statusText += ' Successful Run ' + s.lastSuccessfulRun + '.';
     else statusText += ' Successful Run: never.';
+    if (s.detachedRunning) statusText += ' Running in background.';
     const versionLabel = s.version ? '<div class="site-card-version">v' + escapeHtml(s.version) + '</div>' : '';
     // Login OR Check button, status-driven. The "force re-login" override
     // is rendered separately as a small bare icon in the card header
@@ -8354,12 +8610,21 @@ function render() {
     // action button — only shown when logged in, since when not-logged-in
     // the Login button is already directly available.
     const isLoggedIn = s.status === 'logged_in';
+    const cardDisabled = disabled || s.detachedRunning;
     const loginOrCheck = isLoggedIn
-      ? '<button class="btn btn-check" onclick="checkSite(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + '>Check</button>'
-      : '<button class="btn btn-login" onclick="launchSite(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + '>Login</button>';
+      ? '<button class="btn btn-check" onclick="checkSite(\\'' + s.id + '\\')" ' + (cardDisabled ? 'disabled' : '') + '>Check</button>'
+      : '<button class="btn btn-login" onclick="launchSite(\\'' + s.id + '\\')" ' + (cardDisabled ? 'disabled' : '') + '>Login</button>';
     const reloginIcon = isLoggedIn
-      ? '<button class="site-card-relogin" onclick="confirmRelogin(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Change account / force re-login" aria-label="Change account">↻</button>'
+      ? '<button class="site-card-relogin" onclick="confirmRelogin(\\'' + s.id + '\\')" ' + (cardDisabled ? 'disabled' : '') + ' title="Change account / force re-login" aria-label="Change account">↻</button>'
       : '';
+    const independentRun = customFarmIds.has(s.id);
+    const runDisabled = s.detachedRunning || (disabled && !(independentRun && !busy && !state.activeBrowser));
+    const runHandler = s.id === 'alienware-arena'
+      ? 'runAlienwareArena()'
+      : 'runSite(\\'' + s.id + '\\')';
+    const runButton = s.detachedRunning
+      ? '<button class="btn btn-stop" onclick="stopDetachedSite(\\'' + s.id + '\\')" title="Stop this background service run">Stop</button>'
+      : '<button class="btn btn-run-single" onclick="' + runHandler + '" ' + (runDisabled ? 'disabled' : '') + ' title="Run this service now">Run</button>';
     // Site-link target needs both target="_blank" (open in new tab when
     // the panel is at top-level) AND target="_top" (navigate the parent
     // tab when iframed inside Organizr / similar). The latter is the
@@ -8384,11 +8649,26 @@ function render() {
       '<div class="status ' + statusClass + '">' + statusText + '</div>' +
       '<div class="card-actions">' +
         loginOrCheck +
-        '<button class="btn btn-cookie" onclick="openCookieModal(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Import cookies for this site (paste JSON or upload a file)">↑ Cookie</button>' +
-        '<button class="btn btn-run-single" onclick="runSite(\\'' + s.id + '\\')" ' + (disabled ? 'disabled' : '') + ' title="Run this service now">Run</button>' +
+        '<button class="btn btn-cookie" onclick="openCookieModal(\\'' + s.id + '\\')" ' + (cardDisabled ? 'disabled' : '') + ' title="Import cookies for this site (paste JSON or upload a file)">↑ Cookie</button>' +
+        runButton +
       '</div>' +
     '</div>';
-  }).join('');
+  };
+
+  cards.innerHTML = activeCards.map(renderSessionCard).join('');
+
+  const customFarmEl = document.getElementById('customFarmCards');
+  if (customFarmEl) {
+    if (customFarmCards.length === 0 || sessionsCollapsed || state.activeBrowser) {
+      customFarmEl.style.display = 'none';
+      customFarmEl.innerHTML = '';
+    } else {
+      customFarmEl.style.display = 'block';
+      customFarmEl.innerHTML =
+        '<div class="watcher-section-title">Custom farming services</div>' +
+        '<div class="site-cards" style="margin-top:10px">' + customFarmCards.map(renderSessionCard).join('') + '</div>';
+    }
+  }
 
   // Compact cards for active watch-only collectors. Smaller than full
   // session cards (no dot, no Login/Check, just a Run button) so the
@@ -8915,6 +9195,53 @@ async function runSite(siteId) {
     }
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
   busy = false;
+  await refreshState();
+}
+
+async function runAlienwareArena() {
+  const answer = window.prompt(
+    [
+      'Alienware Arena run mode:',
+      '',
+      '1 = AWA presence + Twitch',
+      '2 = AWA presence only',
+      '3 = Twitch only',
+    ].join(String.fromCharCode(10)),
+    '1',
+  );
+  if (answer === null) return;
+  const mode = ({ '1': 'full', '2': 'presence', '3': 'twitch' }[String(answer).trim().toLowerCase()])
+    || ({ full: 'full', both: 'full', all: 'full', presence: 'presence', afk: 'presence', twitch: 'twitch' }[String(answer).trim().toLowerCase()]);
+  if (!mode) {
+    showToast('Choose 1, 2, or 3 for Alienware Arena run mode.', 'error', 5000);
+    return;
+  }
+
+  const siteName = state.sites.find(s => s.id === 'alienware-arena')?.name || 'Alienware Arena';
+  busy = true; render();
+  try {
+    const r = await api('POST', '/run-service', { site: 'alienware-arena', mode });
+    if (r && r.success === false) {
+      showToast(r.error || 'Run failed', 'error', 5000);
+    } else {
+      const label = mode === 'presence' ? 'AWA presence only' : mode === 'twitch' ? 'Twitch only' : 'AWA presence + Twitch';
+      showToast('Started ' + siteName + ' (' + label + ') — open the Logs tab to watch output.', 'success', 4000);
+    }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+  busy = false;
+  await refreshState();
+}
+
+async function stopDetachedSite(siteId) {
+  const siteName = state.sites.find(s => s.id === siteId)?.name || siteId;
+  try {
+    const r = await api('POST', '/stop-detached-run', { site: siteId });
+    if (r && r.success === false) {
+      showToast(r.error || 'Stop failed', 'error', 5000);
+    } else {
+      showToast('Stopping ' + siteName + '…', 'info', 3000);
+    }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
   await refreshState();
 }
 
@@ -9706,6 +10033,24 @@ const server = http.createServer(async (req, res) => {
       try {
         const body = await parseBody(req);
         const site = body && body.site;
+        const mode = body && body.mode;
+        if (INDEPENDENT_SCHEDULED_SITE_IDS.has(site)) {
+          const extraEnv = {};
+          if (site === 'alienware-arena') {
+            if (mode != null && !['full', 'presence', 'twitch'].includes(mode)) {
+              sendJson(res, { success: false, error: 'mode must be full, presence, or twitch' }, 400);
+              return;
+            }
+            if (mode) extraEnv.AWA_RUN_MODE = mode;
+          }
+          const result = fireDetachedScheduledRun({
+            label: site,
+            sites: [site],
+            extraEnv,
+          });
+          sendJson(res, result);
+          return;
+        }
         if (!site || typeof site !== 'string') {
           sendJson(res, { success: false, error: 'site required (e.g. {"site": "microsoft"})' }, 400);
           return;
@@ -9714,6 +10059,22 @@ const server = http.createServer(async (req, res) => {
         // passing either ID runs the shared script once.
         await expireStaleActiveBrowser();
         const result = runAllScripts({ source: 'panel', sites: [site] });
+        sendJson(res, result);
+      } catch (e) {
+        sendJson(res, { success: false, error: e.message }, 400);
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/stop-detached-run') {
+      try {
+        const body = await parseBody(req);
+        const site = body && body.site;
+        if (!site || typeof site !== 'string') {
+          sendJson(res, { success: false, error: 'site required' }, 400);
+          return;
+        }
+        const result = stopDetachedRun(site);
         sendJson(res, result);
       } catch (e) {
         sendJson(res, { success: false, error: e.message }, 400);
@@ -11189,6 +11550,9 @@ server.listen(PANEL_PORT, async () => {
   });
   msSchedulerLoop().catch(err => {
     console.error(`[${datetime()}] Scheduler (MS) crashed:`, err);
+  });
+  awaSchedulerLoop().catch(err => {
+    console.error(`[${datetime()}] Scheduler (AWA) crashed:`, err);
   });
   lenovoSchedulerLoop().catch(err => {
     console.error(`[${datetime()}] Scheduler (Lenovo) crashed:`, err);

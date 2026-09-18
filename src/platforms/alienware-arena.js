@@ -91,6 +91,16 @@ async function captchaVisible() {
  * - ARP Points extraction:
  *     - Regexp matches "ARP" or "Arena Rewards Points" followed by point values
  */
+let awaControlCenterState = {
+  timeOnSiteArp: null,
+  timeOnSiteCap: null,
+  dailyArp: null,
+  twitchStatus: null,
+  twitchArp: null,
+  twitchUnderCap: true,
+  live2xStreamers: [],
+};
+
 async function readAwaLogin() {
   await gotoWithRetry(page, AWA_URL, {
     attempts: 2,
@@ -120,7 +130,94 @@ async function readAwaLogin() {
       || text.match(/([\d,]+)\s*ARP/i);
     const arp = arpMatch ? Number(arpMatch[1].replace(/,/g, '')) : null;
 
-    return { loggedIn, user, arp, title: document.title };
+    // Extract dailyArpData and DOM-rendered ARP stats from Control Center
+    let tosArp = null;
+    let tosCap = null;
+    let dailyArp = null;
+    let twitchStatus = null;
+    let twitchArp = null;
+    let twitchUnderCap = true;
+
+    // 1. Try reading from DOM elements
+    const tosArpEl = document.getElementById('control-center__tos-arp');
+    const tosCapEl = document.getElementById('control-center__tos-max-arp');
+    const totalArpEl = document.getElementById('control-center__total-arp');
+    const twitchStatusEl = document.getElementById('control-center__twitch-arp-status');
+    const twitchArpEl = document.getElementById('control-center__twitch-arp');
+    const twitchMaxReachedEl = document.getElementById('control-center__twitch-max-reached');
+
+    if (tosArpEl && tosArpEl.textContent) tosArp = Number(tosArpEl.textContent.trim());
+    if (tosCapEl && tosCapEl.textContent) tosCap = Number(tosCapEl.textContent.trim());
+    if (totalArpEl && totalArpEl.textContent) dailyArp = Number(totalArpEl.textContent.trim());
+    if (twitchStatusEl && twitchStatusEl.textContent) twitchStatus = twitchStatusEl.textContent.trim();
+    if (twitchArpEl && twitchArpEl.textContent) twitchArp = Number(twitchArpEl.textContent.trim());
+
+    if (twitchStatus) {
+      if (twitchStatus.toLowerCase() === 'complete' || (twitchMaxReachedEl && window.getComputedStyle(twitchMaxReachedEl).display !== 'none')) {
+        twitchUnderCap = false;
+      }
+    }
+
+    // 2. Try reading raw script variable dailyArpData if available in page source
+    try {
+      const scripts = Array.from(document.querySelectorAll('script')).map(s => s.textContent || '');
+      for (const s of scripts) {
+        const m = s.match(/let\s+dailyArpData\s*=\s*(\{.+?\});/s);
+        if (m) {
+          const parsed = JSON.parse(m[1]);
+          if (parsed) {
+            if (Number.isFinite(parsed.timeOnSiteArp)) tosArp = parsed.timeOnSiteArp;
+            if (Number.isFinite(parsed.timeOnSiteCap)) tosCap = parsed.timeOnSiteCap;
+            if (Number.isFinite(parsed.dailyArp)) dailyArp = parsed.dailyArp;
+            if (parsed.twitchData) {
+              if (parsed.twitchData.underCap !== undefined) twitchUnderCap = !!parsed.twitchData.underCap;
+              if (Number.isFinite(parsed.twitchData.totalPoints)) twitchArp = parsed.twitchData.totalPoints + (parsed.twitchData.bonusPoints || 0);
+            }
+          }
+          break;
+        }
+      }
+    } catch {}
+
+    // 3. Extract 2x live streamers from Hive and Nexus sections
+    const live2xStreamers = [];
+    try {
+      const headings = Array.from(document.querySelectorAll('.card-table-heading'));
+      for (const h of headings) {
+        const title = (h.textContent || '').trim();
+        const is2x = title.includes('Hive') || title.includes('Nexus') || title.includes('2x');
+        if (!is2x || title.includes('Partners')) continue;
+
+        // Traverse sibling rows until next heading or end of card body
+        let row = h.closest('.row')?.nextElementSibling;
+        while (row && !row.querySelector('.card-table-heading')) {
+          const liveBadge = row.querySelector('.quest-list__stream-live');
+          const link = row.querySelector('a[href*="twitch.tv/"]');
+          if (liveBadge && link) {
+            const m = link.href.match(/twitch\.tv\/([a-zA-Z0-9_]+)/i);
+            if (m && m[1]) {
+              const name = m[1].toLowerCase();
+              if (!live2xStreamers.includes(name)) live2xStreamers.push(name);
+            }
+          }
+          row = row.nextElementSibling;
+        }
+      }
+    } catch {}
+
+    return {
+      loggedIn,
+      user,
+      arp,
+      title: document.title,
+      tosArp,
+      tosCap,
+      dailyArp,
+      twitchStatus,
+      twitchArp,
+      twitchUnderCap,
+      live2xStreamers,
+    };
   });
 
   if (result.user) user = result.user;
@@ -129,6 +226,28 @@ async function readAwaLogin() {
     db.data.latestArp = { value: arpBalance, time: datetime() };
     log.status('ARP', arpBalance);
   }
+
+  awaControlCenterState = {
+    timeOnSiteArp: result.tosArp,
+    timeOnSiteCap: result.tosCap,
+    dailyArp: result.dailyArp,
+    twitchStatus: result.twitchStatus,
+    twitchArp: result.twitchArp,
+    twitchUnderCap: result.twitchUnderCap,
+    live2xStreamers: result.live2xStreamers || [],
+  };
+
+  if (Number.isFinite(result.tosArp) && Number.isFinite(result.tosCap)) {
+    log.status('Time on Site', `${result.tosArp}/${result.tosCap} ARP`);
+  }
+  if (result.twitchStatus || Number.isFinite(result.twitchArp)) {
+    const statusText = result.twitchUnderCap ? 'Incomplete' : 'Complete (Cap reached)';
+    log.status('Twitch ARP', `${result.twitchArp ?? 0} ARP [${statusText}]`);
+  }
+  if (awaControlCenterState.live2xStreamers.length) {
+    log.status('AWA 2x Live', awaControlCenterState.live2xStreamers.join(', '));
+  }
+
   return result.loggedIn;
 }
 
@@ -280,6 +399,15 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
 
 async function runAwaPresence() {
   if (cfg.awa_presence_minutes <= 0) return true;
+
+  // Check if Time on Site is already maxed out today
+  if (Number.isFinite(awaControlCenterState.timeOnSiteArp) && Number.isFinite(awaControlCenterState.timeOnSiteCap)) {
+    if (awaControlCenterState.timeOnSiteArp >= awaControlCenterState.timeOnSiteCap) {
+      log.info(`Time on Site ARP is already maxed today (${awaControlCenterState.timeOnSiteArp}/${awaControlCenterState.timeOnSiteCap} ARP); skipping presence`);
+      return true;
+    }
+  }
+
   await gotoWithRetry(page, AWA_URL, { waitUntil: 'domcontentloaded' });
   const solved = await awaitUserCaptchaSolve(page, {
     service: SITE_ID,
@@ -360,26 +488,70 @@ async function watchStreamer(streamer, minutes, alreadyOnPage = false) {
   return true;
 }
 
-async function runTwitchSessions() {
-  if (!streamers.length) {
-    log.warn('No Twitch streamers configured');
-    return { watched: 0, offline: 0, errors: 0, waitCycles: 0 };
+function getCandidateStreamers() {
+  const manualList = cfg.awa_twitch_streamers
+    .split(',')
+    .map(s => s.trim().toLowerCase())
+    .filter(s => /^[a-z0-9_]{3,25}$/i.test(s));
+
+  if (cfg.awa_streamer_selection_mode === 'manual_only') {
+    return manualList;
   }
 
+  // auto_2x mode: Prioritize live Hive & Nexus streamers detected on Control Center
+  const live2x = awaControlCenterState.live2xStreamers || [];
+  if (live2x.length) {
+    // Combine 2x live streamers first, followed by manual list (excluding duplicates)
+    const combined = [...live2x];
+    for (const m of manualList) {
+      if (!combined.includes(m)) combined.push(m);
+    }
+    return combined;
+  }
+
+  return manualList;
+}
+
+async function runTwitchSessions() {
   let watched = 0;
   let offline = 0;
   let errors = 0;
   let waitCycles = 0;
 
   while (todayTwitchTotal() < cfg.awa_daily_target_minutes) {
+    // Check if Twitch ARP is already capped on Alienware Arena
+    if (cfg.awa_stop_on_twitch_cap && !awaControlCenterState.twitchUnderCap) {
+      log.ok('Twitch ARP maximum cap reached on Alienware Arena (underCap is false); stopping watch session');
+      break;
+    }
+
+    const currentStreamers = getCandidateStreamers();
+    if (!currentStreamers.length) {
+      log.warn('No Twitch streamers available to watch');
+      break;
+    }
+
     let liveFound = false;
     let liveCheckUnknown = false;
 
-    for (const streamer of streamers) {
+    for (const streamer of currentStreamers) {
       if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) break;
+
+      // Check cap before each stream attempt
+      if (cfg.awa_stop_on_twitch_cap && !awaControlCenterState.twitchUnderCap) break;
+
       try {
-        let live = await isStreamerLive(streamer);
+        let live = null;
         let onPage = false;
+
+        // If this streamer was directly detected as LIVE in AWA Hive/Nexus, we know they are live!
+        if (awaControlCenterState.live2xStreamers.includes(streamer)) {
+          log.info(`${streamer} is 2x LIVE on AWA Control Center`);
+          live = true;
+        } else {
+          live = await isStreamerLive(streamer);
+        }
+
         if (live === null) {
           // Browser-based fallback when Twitch API credentials are not configured
           const url = `https://www.twitch.tv/${streamer}`;
@@ -414,6 +586,16 @@ async function runTwitchSessions() {
         const minutes = Math.max(1, Math.min(cfg.awa_watch_chunk_minutes, Math.ceil(remaining)));
         await watchStreamer(streamer, minutes, onPage);
         watched++;
+
+        // Re-read AWA Control Center status to update ARP points and cap status
+        log.info('Checking AWA Control Center for updated Twitch ARP balance...');
+        await readAwaLogin().catch(() => {});
+
+        if (cfg.awa_stop_on_twitch_cap && !awaControlCenterState.twitchUnderCap) {
+          log.ok('Twitch ARP maximum cap reached on Alienware Arena! Completing Twitch watch session.');
+          break;
+        }
+
         break;
       } catch (e) {
         errors++;
@@ -424,15 +606,19 @@ async function runTwitchSessions() {
       await page.waitForTimeout(jitterMs(10, 20));
     }
 
+    if (cfg.awa_stop_on_twitch_cap && !awaControlCenterState.twitchUnderCap) break;
     if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) break;
+
     if (!liveFound) {
       waitCycles++;
       const reason = liveCheckUnknown
         ? 'Live status unavailable'
-        : 'No configured streamers are live';
+        : 'No 2x/configured streamers are live';
       const waitMinutes = Math.max(1, cfg.awa_twitch_recheck_minutes);
-      log.info(`${reason}; waiting ${waitMinutes} minute${waitMinutes === 1 ? '' : 's'} before checking again`);
+      log.info(`${reason}; re-checking Control Center in ${waitMinutes} minute${waitMinutes === 1 ? '' : 's'}`);
       await page.waitForTimeout(waitMinutes * 60 * 1000);
+      // Re-read Control Center to catch newly live Hive/Nexus streamers
+      await readAwaLogin().catch(() => {});
     }
   }
 
@@ -448,8 +634,6 @@ try {
   } else if (arpTargetReached()) {
     log.info(`ARP target reached: ${arpBalance}/${cfg.awa_arp_target}`);
     log.summary({ siteId: SITE_ID, claimed: 0, skipped: 0, display: 'pointsEarned', pointsEarned: 0 });
-  } else if (wantsTwitch && !wantsPresence && todayTwitchTotal() >= cfg.awa_daily_target_minutes) {
-    log.info(`Twitch target already met: ${todayTwitchTotal()}/${cfg.awa_daily_target_minutes} minutes`);
   } else {
     let twitch = { watched: 0, offline: 0, errors: 0, waitCycles: 0 };
 
@@ -459,8 +643,10 @@ try {
     }
 
     if (wantsTwitch) {
-      if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) {
-        log.info(`Twitch target already met: ${todayTwitchTotal()}/${cfg.awa_daily_target_minutes} minutes`);
+      if (cfg.awa_stop_on_twitch_cap && !awaControlCenterState.twitchUnderCap) {
+        log.ok('Twitch ARP already maxed today on Alienware Arena (Complete / Cap reached)');
+      } else if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) {
+        log.info(`Twitch safety limit already met: ${todayTwitchTotal()}/${cfg.awa_daily_target_minutes} minutes`);
       } else {
         const twitchOk = await ensureTwitchLogin();
         if (!twitchOk) {

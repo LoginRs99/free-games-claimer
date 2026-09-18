@@ -122,8 +122,8 @@ Az alábbi paramétereket megadhatod környezeti változóként (`.env` vagy Doc
 | `AWA_RUN_MODE` | `full` | Indítási mód: `full` (1 = AWA + Twitch), `presence` (2 = csak AWA), `twitch` (3 = csak Twitch). |
 | `AWA_STREAMER_SELECTION_MODE` | `auto_2x` | `auto_2x`: A Control Center Hive & Nexus 2x élő streamereit nézi (kizárja az 1x partnereket). `manual_only`: csak a megadott listát. |
 | `AWA_STOP_ON_TWITCH_CAP` | `true` | Azonnal leáll, amint a Control Center jelzi, hogy megvan a napi max Twitch ARP (`underCap: false`). |
-| `AWA_PRESENCE_MINUTES` | `30` | Time on Site időkorlát. Ha a napi limit (pl. 5/5) már megvan vagy futás közben eléri, azonnal kilép! |
-| `AWA_DAILY_TARGET_MINUTES` | `250` | Biztonsági maximális futási idő Twitch nézésre. |
+| `AWA_PRESENCE_MINUTES` | `25` | Time on Site időkorlát. Ha a napi limit (pl. 5/5) már megvan vagy futás közben eléri, azonnal kilép! |
+| `AWA_DAILY_TARGET_MINUTES` | `120` | Biztonsági maximális futási idő Twitch nézésre. |
 | `AWA_ARP_TARGET` | `0` | Ha a teljes ARP egyenleg eléri ezt a számot, az AWA futás kihagyja a napot (`0` = kikapcsolva). |
 | `AWA_WATCH_CHUNK_MINUTES` | `30` | Hány perces blokkokban nézzen egy streamert, mielőtt újra ellenőrzi a Control Center állapotát. |
 | `AWA_TWITCH_RECHECK_MINUTES` | `10` | Ha épp senki sem élő a 2x listából, ennyi perc múlva ellenőrzi újra a Control Centert. |

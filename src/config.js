@@ -139,10 +139,10 @@ export const cfg = {
   // launch-day indies before they have reviews. See #61.
   steam_skip_unrated: steam.skipUnrated ?? true,
   // alienware arena / AWA Twitch watch time
-  awa_presence_minutes: awa.presenceMinutes ?? 30,
+  awa_presence_minutes: awa.presenceMinutes ?? 25,
   awa_streamer_selection_mode: awa.streamerSelectionMode || 'auto_2x',
   awa_stop_on_twitch_cap: awa.stopOnTwitchCap ?? true,
-  awa_daily_target_minutes: awa.dailyTargetMinutes ?? 250,
+  awa_daily_target_minutes: awa.dailyTargetMinutes ?? 120,
   awa_arp_target: awa.arpTarget ?? 0,
   awa_watch_chunk_minutes: awa.watchChunkMinutes ?? 30,
   awa_twitch_recheck_minutes: awa.twitchRecheckMinutes ?? 10,

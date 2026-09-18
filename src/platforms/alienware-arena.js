@@ -331,6 +331,7 @@ async function ensureTwitchLogin() {
 async function keepPageAlive(minutes, label, activity = 'scroll') {
   const end = Date.now() + minutes * 60 * 1000;
   let checkCycle = 0;
+  let lastAwaCapCheckAt = 0;
   while (Date.now() < end) {
     checkCycle++;
     if (activity === 'twitch') {
@@ -362,8 +363,10 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
         await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
       }
     } else if (activity === 'awa') {
-      // Check AWA session drop and Time on Site ARP cap during presence
-      if (checkCycle % 2 === 0) {
+      // Check AWA session drop and Time on Site ARP cap every ~5 minutes (300,000ms)
+      const now = Date.now();
+      if (now - lastAwaCapCheckAt >= 5 * 60 * 1000) {
+        lastAwaCapCheckAt = now;
         const check = await page.evaluate(() => {
           const loggedIn = !!document.querySelector('[data-is-logged-in="true"], a[href="/quests"]');
           let tosArp = null;

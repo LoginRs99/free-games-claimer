@@ -119,16 +119,33 @@ Az alábbi paramétereket megadhatod környezeti változóként (`.env` vagy Doc
 | Változó / Kulcs | Alapértelmezett | Leírás |
 | :--- | :--- | :--- |
 | `AWA_ACTIVE` | `0` (kikapcsolva) | `1`-re állítva bekapcsolja az AWA szolgáltatást. |
-| `AWA_PRESENCE_MINUTES` | `30` | Hány percet töltsön az AWA Control Center felületén. |
-| `AWA_DAILY_TARGET_MINUTES` | `250` | Napi elérendő Twitch nézési idő (percben). |
-| `AWA_ARP_TARGET` | `0` | Ha az ARP egyenleg eléri ezt a számot, az AWA futás kihagyja a napot (`0` = kikapcsolva). |
-| `AWA_WATCH_CHUNK_MINUTES` | `30` | Hány perces blokkokban nézzen egy streamert, mielőtt újra ellenőrzi a kvótát. |
-| `AWA_TWITCH_RECHECK_MINUTES` | `10` | Ha senki sem élő a megadott listából, ennyi perc múlva próbálja újra. |
-| `AWA_TWITCH_STREAMERS` | *Streamer lista* | Vesszővel elválasztott Twitch felhasznalónevek. |
+| `AWA_RUN_MODE` | `full` | Indítási mód: `full` (1 = AWA + Twitch), `presence` (2 = csak AWA), `twitch` (3 = csak Twitch). |
+| `AWA_STREAMER_SELECTION_MODE` | `auto_2x` | `auto_2x`: A Control Center Hive & Nexus 2x élő streamereit nézi (kizárja az 1x partnereket). `manual_only`: csak a megadott listát. |
+| `AWA_STOP_ON_TWITCH_CAP` | `true` | Azonnal leáll, amint a Control Center jelzi, hogy megvan a napi max Twitch ARP (`underCap: false`). |
+| `AWA_PRESENCE_MINUTES` | `30` | Time on Site időkorlát. Ha a napi limit (pl. 5/5) már megvan vagy futás közben eléri, azonnal kilép! |
+| `AWA_DAILY_TARGET_MINUTES` | `250` | Biztonsági maximális futási idő Twitch nézésre. |
+| `AWA_ARP_TARGET` | `0` | Ha a teljes ARP egyenleg eléri ezt a számot, az AWA futás kihagyja a napot (`0` = kikapcsolva). |
+| `AWA_WATCH_CHUNK_MINUTES` | `30` | Hány perces blokkokban nézzen egy streamert, mielőtt újra ellenőrzi a Control Center állapotát. |
+| `AWA_TWITCH_RECHECK_MINUTES` | `10` | Ha épp senki sem élő a 2x listából, ennyi perc múlva ellenőrzi újra a Control Centert. |
+| `AWA_TWITCH_STREAMERS` | *2x streamer lista* | Vesszővel elválasztott Twitch felhasználónevek tartaléknak (`matthewsantoro,trishahershberger,mactics...`). |
 | `AWA_SCHEDULE_HOURS` | `0` | Független napi időablak hossza órában (`0` = ki van kapcsolva az időzítő). |
 | `AWA_SCHEDULE_START` | `8` | Az AWA időablak kezdő órája (pl. `8` = 08:00). |
 | `TWITCH_CLIENT_ID` *(opcionális)* | – | Twitch Developer App Client ID (gyors API ellenőrzéshez). |
 | `TWITCH_CLIENT_SECRET` *(opcionális)* | – | Twitch Developer App Client Secret. |
+
+---
+
+## 6. Működési Módok (1, 2, 3)
+
+A Web-UI **Sessions** fülén az Alienware Arena kártyán a **Run** gombra kattintva felugró ablakban választható ki a kívánt feladat:
+* **`1` – AWA presence + Twitch (Teljes rutin):**
+  1. Ellenőrzi a Time on Site (TOS) pontokat. Ha már `5/5 ARP` van, azonnal átugorja a jelenlétet! Ha még nincs kész, megkezdi a jelenlétet és dinamikusan kilép, amint eléri a maximumot.
+  2. Átlép a Twitch fázisra: felismeri a 2x Hive és Nexus élő streamereket és addig nézi őket, amíg az AWA szerint el nem éri a napi max cap-et.
+* **`2` – AWA presence only (Csak jelenlét):**
+  * Kizárólag az AWA Control Centeren gyűjti a napi Time on Site pontokat. Ha már kimaxoltad mára, azonnal leáll, nem pazarol időt. A Twitch nézést nem indítja el.
+* **`3` – Twitch only (Csak Twitch stream nézés):**
+  * Az AWA jelenlétet teljesen kihagyja.
+  * Ellenőrzi a Twitch bejelentkezést, majd elkezdi nézni a 2x Hive & Nexus streamereket a Control Center élő listájából, amíg meg nem kapja az összes Twitch ARP pontot.
 
 > [!NOTE]
 > A Twitch API kulcsok opcionálisak! Ha nem adod meg őket, a beépített böngészős fallback automatikusan megvizsgálja a streamer állapotát.

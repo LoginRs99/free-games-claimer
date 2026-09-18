@@ -883,14 +883,36 @@ export const SITES = [
       try {
         await page.goto('https://eu.alienwarearena.com/control-center', { waitUntil: 'domcontentloaded', timeout: 20000 });
         await page.waitForTimeout(2500);
-        const loggedIn = await page.locator('[data-is-logged-in="true"], a[href="/quests"]').first().count();
-        if (loggedIn > 0) {
-          const user = await page.locator('.media-body, .username, [class*="username"]').first().innerText({ timeout: 2000 }).catch(() => 'member');
-          return { loggedIn: true, user: user?.trim() || 'member' };
+        const awaLoggedIn = (await page.locator('[data-is-logged-in="true"], a[href="/quests"]').first().count()) > 0;
+        let awaUser = null;
+        if (awaLoggedIn) {
+          awaUser = await page.locator('.media-body, .username, [class*="username"]').first().innerText({ timeout: 2000 }).catch(() => 'member');
+          awaUser = awaUser?.trim() || 'member';
+        }
+
+        // Check Twitch authentication in the shared browser context via cookies
+        let twitchLoggedIn = false;
+        let twitchUser = null;
+        try {
+          const cookies = await page.context().cookies('https://www.twitch.tv');
+          const authCookie = cookies.find(c => c.name === 'auth-token' && c.value);
+          const loginCookie = cookies.find(c => c.name === 'login' && c.value);
+          if (authCookie) {
+            twitchLoggedIn = true;
+            twitchUser = loginCookie ? decodeURIComponent(loginCookie.value) : 'logged-in';
+          }
+        } catch {}
+
+        if (awaLoggedIn && twitchLoggedIn) {
+          return { loggedIn: true, user: `AWA: ${awaUser} | Twitch: ${twitchUser}` };
+        } else if (awaLoggedIn && !twitchLoggedIn) {
+          return { loggedIn: false, user: `AWA: ${awaUser} | Twitch: not signed in` };
+        } else if (!awaLoggedIn && twitchLoggedIn) {
+          return { loggedIn: false, user: `AWA: not signed in | Twitch: ${twitchUser}` };
         }
         return { loggedIn: false };
-      } catch {
-        return { loggedIn: false };
+      } catch (e) {
+        return { loggedIn: false, error: (e && e.message ? e.message.split('\n')[0] : String(e)).slice(0, 200) };
       }
     },
   },

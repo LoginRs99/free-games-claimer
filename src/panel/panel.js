@@ -327,6 +327,16 @@ async function launchSite(siteId) {
 
   if (!site.contextOptions?.viewport) await page.setViewportSize({ width: cfg.width, height: cfg.height });
   await page.goto(site.loginUrl, { waitUntil: 'domcontentloaded' });
+  if (siteId === 'alienware-arena') {
+    // Open Twitch in a second tab so user can easily sign in to both AWA and Twitch in one VNC session
+    try {
+      const twitchPage = await context.newPage();
+      if (!site.contextOptions?.viewport) await twitchPage.setViewportSize({ width: cfg.width, height: cfg.height });
+      await twitchPage.goto('https://www.twitch.tv/login', { waitUntil: 'domcontentloaded' }).catch(() => {});
+      // Switch back to the primary AWA page as active
+      await page.bringToFront().catch(() => {});
+    } catch {}
+  }
 
   activeBrowser = { siteId, context, page, openedAt: Date.now() };
   console.log(`[${datetime()}] Browser launched for ${site.name}. User can now log in via VNC.`);
@@ -8598,7 +8608,7 @@ function render() {
     const statusClass = dotClass;
     let statusText = 'Not checked';
     if (s.status === 'logged_in') statusText = 'Logged in' + (s.user ? ' as ' + s.user : '') + '.';
-    else if (s.status === 'not_logged_in') statusText = 'Not logged in.';
+    else if (s.status === 'not_logged_in') statusText = s.user ? ('Not fully signed in (' + s.user + ').') : 'Not logged in.';
     else if (s.status === 'error') statusText = 'Error checking.';
     if (s.lastSuccessfulRun) statusText += ' Successful Run ' + s.lastSuccessfulRun + '.';
     else statusText += ' Successful Run: never.';

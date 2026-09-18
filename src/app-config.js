@@ -49,6 +49,11 @@ function coerceFromDescriptor(d, type) {
       const s = String(v || '').toLowerCase().trim();
       return ['low', 'moderate', 'normal', 'high', 'emergency'].includes(s) ? s : 'normal';
     };
+    case 'stringEnum': return v => {
+      const s = String(v || '').trim();
+      const valid = Array.isArray(d.values) ? d.values : [];
+      return valid.includes(s) ? s : d.fallback;
+    };
     default: throw new Error(`unknown coerce descriptor kind: ${d.kind}`);
   }
 }

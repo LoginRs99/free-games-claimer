@@ -140,11 +140,13 @@ export const cfg = {
   steam_skip_unrated: steam.skipUnrated ?? true,
   // alienware arena / AWA Twitch watch time
   awa_presence_minutes: awa.presenceMinutes ?? 30,
+  awa_streamer_selection_mode: awa.streamerSelectionMode || 'auto_2x',
+  awa_stop_on_twitch_cap: awa.stopOnTwitchCap ?? true,
   awa_daily_target_minutes: awa.dailyTargetMinutes ?? 250,
   awa_arp_target: awa.arpTarget ?? 0,
   awa_watch_chunk_minutes: awa.watchChunkMinutes ?? 30,
   awa_twitch_recheck_minutes: awa.twitchRecheckMinutes ?? 10,
-  awa_twitch_streamers: awa.twitchStreamers || '3llebelle,BiffleTV,PirateGray,FooYa,RogersBase,TheGeekEntry,Layria,MatthewSantoro,Lovinurstyle,Liddles,TrishaHershberger,Mactics,MoonlitCharlie',
+  awa_twitch_streamers: awa.twitchStreamers || 'matthewsantoro,trishahershberger,mactics,hazeleyedchic,kesslive,3llebelle,thegeekentry,lovinurstyle,layria',
   awa_twitch_client_id: process.env.TWITCH_CLIENT_ID,
   awa_twitch_client_secret: process.env.TWITCH_CLIENT_SECRET,
   // auth microsoft rewards

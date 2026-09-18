@@ -362,16 +362,32 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
         await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
       }
     } else if (activity === 'awa') {
-      // Check AWA session drop during presence
+      // Check AWA session drop and Time on Site ARP cap during presence
       if (checkCycle % 2 === 0) {
-        const loggedIn = await page.evaluate(() => {
-          return !!document.querySelector('[data-is-logged-in="true"], a[href="/quests"]');
-        }).catch(() => true);
+        const check = await page.evaluate(() => {
+          const loggedIn = !!document.querySelector('[data-is-logged-in="true"], a[href="/quests"]');
+          let tosArp = null;
+          let tosCap = null;
+          const tosArpEl = document.getElementById('control-center__tos-arp');
+          const tosCapEl = document.getElementById('control-center__tos-max-arp');
+          if (tosArpEl && tosArpEl.textContent) tosArp = Number(tosArpEl.textContent.trim());
+          if (tosCapEl && tosCapEl.textContent) tosCap = Number(tosCapEl.textContent.trim());
+          return { loggedIn, tosArp, tosCap };
+        }).catch(() => ({ loggedIn: true, tosArp: null, tosCap: null }));
 
-        if (!loggedIn) {
+        if (!check.loggedIn) {
           log.warn('AWA session expired during presence watch!');
           await notify('alienware-arena: Session expired during AWA presence!', { kind: 'action', attachLatestScreenshot: true });
           throw new Error('AWA session expired during presence');
+        }
+
+        if (Number.isFinite(check.tosArp) && Number.isFinite(check.tosCap)) {
+          awaControlCenterState.timeOnSiteArp = check.tosArp;
+          awaControlCenterState.timeOnSiteCap = check.tosCap;
+          if (check.tosArp >= check.tosCap) {
+            log.ok(`Time on Site ARP reached daily max during presence (${check.tosArp}/${check.tosCap} ARP)!`);
+            break; // Stop waiting immediately
+          }
         }
       }
 
@@ -518,7 +534,8 @@ async function runTwitchSessions() {
   let errors = 0;
   let waitCycles = 0;
 
-  while (todayTwitchTotal() < cfg.awa_daily_target_minutes) {
+  let sessionWatchMinutes = 0;
+  while (sessionWatchMinutes < cfg.awa_daily_target_minutes) {
     // Check if Twitch ARP is already capped on Alienware Arena
     if (cfg.awa_stop_on_twitch_cap && !awaControlCenterState.twitchUnderCap) {
       log.ok('Twitch ARP maximum cap reached on Alienware Arena (underCap is false); stopping watch session');
@@ -535,7 +552,7 @@ async function runTwitchSessions() {
     let liveCheckUnknown = false;
 
     for (const streamer of currentStreamers) {
-      if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) break;
+      if (sessionWatchMinutes >= cfg.awa_daily_target_minutes) break;
 
       // Check cap before each stream attempt
       if (cfg.awa_stop_on_twitch_cap && !awaControlCenterState.twitchUnderCap) break;
@@ -582,10 +599,11 @@ async function runTwitchSessions() {
         }
 
         liveFound = true;
-        const remaining = cfg.awa_daily_target_minutes - todayTwitchTotal();
+        const remaining = cfg.awa_daily_target_minutes - sessionWatchMinutes;
         const minutes = Math.max(1, Math.min(cfg.awa_watch_chunk_minutes, Math.ceil(remaining)));
         await watchStreamer(streamer, minutes, onPage);
         watched++;
+        sessionWatchMinutes += minutes;
 
         // Re-read AWA Control Center status to update ARP points and cap status
         log.info('Checking AWA Control Center for updated Twitch ARP balance...');
@@ -607,7 +625,7 @@ async function runTwitchSessions() {
     }
 
     if (cfg.awa_stop_on_twitch_cap && !awaControlCenterState.twitchUnderCap) break;
-    if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) break;
+    if (sessionWatchMinutes >= cfg.awa_daily_target_minutes) break;
 
     if (!liveFound) {
       waitCycles++;
@@ -645,8 +663,6 @@ try {
     if (wantsTwitch) {
       if (cfg.awa_stop_on_twitch_cap && !awaControlCenterState.twitchUnderCap) {
         log.ok('Twitch ARP already maxed today on Alienware Arena (Complete / Cap reached)');
-      } else if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) {
-        log.info(`Twitch safety limit already met: ${todayTwitchTotal()}/${cfg.awa_daily_target_minutes} minutes`);
       } else {
         const twitchOk = await ensureTwitchLogin();
         if (!twitchOk) {

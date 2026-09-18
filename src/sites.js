@@ -883,10 +883,16 @@ export const SITES = [
       try {
         await page.goto('https://eu.alienwarearena.com/control-center', { waitUntil: 'domcontentloaded', timeout: 20000 });
         await page.waitForTimeout(2500);
-        const awaLoggedIn = (await page.locator('[data-is-logged-in="true"], a[href="/quests"]').first().count()) > 0;
+        const awaLoggedIn = (await page.locator([
+          '[data-is-logged-in="true"]',
+          'a[href="/quests"]',
+          'a[href*="/member/"]',
+          '.user-avatar',
+          '.nav-user',
+        ].join(', ')).first().count()) > 0;
         let awaUser = null;
         if (awaLoggedIn) {
-          awaUser = await page.locator('.media-body, .username, [class*="username"]').first().innerText({ timeout: 2000 }).catch(() => 'member');
+          awaUser = await page.locator('.media-body, .username, [class*="username"], .user-name, [data-user-name]').first().innerText({ timeout: 2000 }).catch(() => 'member');
           awaUser = awaUser?.trim() || 'member';
         }
 

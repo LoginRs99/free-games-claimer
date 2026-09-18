@@ -169,17 +169,98 @@ async function ensureAwaLogin() {
   return await readAwaLogin();
 }
 
+async function checkTwitchLogin() {
+  try {
+    const cookies = await context.cookies('https://www.twitch.tv');
+    const authCookie = cookies.find(c => c.name === 'auth-token' && c.value);
+    const loginCookie = cookies.find(c => c.name === 'login' && c.value);
+    if (authCookie) {
+      return { loggedIn: true, user: loginCookie ? decodeURIComponent(loginCookie.value) : 'logged-in' };
+    }
+    return { loggedIn: false, user: null };
+  } catch {
+    return { loggedIn: false, user: null };
+  }
+}
+
+async function ensureTwitchLogin() {
+  const twitch = await checkTwitchLogin();
+  if (twitch.loggedIn) {
+    log.status('Twitch user', twitch.user);
+    return true;
+  }
+
+  log.warn('Not signed in to Twitch (watch time will not track ARP)');
+  await notify('alienware-arena: Twitch not signed in! Open Sessions tab/noVNC to log in to Twitch.', { kind: 'action' });
+
+  if (cfg.nowait || cfg.headless) {
+    return false;
+  }
+
+  // Interactive mode: open Twitch login page and allow user to log in
+  log.info('Opening Twitch login page...');
+  await gotoWithRetry(page, 'https://www.twitch.tv/login', { waitUntil: 'domcontentloaded' });
+  await awaitUserCaptchaSolve(page, {
+    service: SITE_ID,
+    label: 'Twitch login / captcha',
+    captchaCheck: async () => !(await checkTwitchLogin()).loggedIn,
+  });
+
+  return (await checkTwitchLogin()).loggedIn;
+}
+
 async function keepPageAlive(minutes, label, activity = 'scroll') {
   const end = Date.now() + minutes * 60 * 1000;
+  let checkCycle = 0;
   while (Date.now() < end) {
+    checkCycle++;
     if (activity === 'twitch') {
-      await page.evaluate(() => {
+      const state = await page.evaluate(() => {
         const mute = document.querySelector('[data-a-target="player-mute-unmute-button"]');
         if (mute && mute.getAttribute('data-muted') !== 'true') mute.click();
         const chat = document.querySelector('.chat-room, [data-a-target="chat-messages"]');
         if (chat) chat.style.display = 'none';
+
+        // Check for Twitch player errors (e.g. Error #2000, #3000, #4000)
+        const errorEl = document.querySelector('[data-a-target="player-overlay-contentgate"], [data-a-target="player-error"]');
+        const hasError = !!errorEl;
+        const errorText = errorEl ? errorEl.textContent?.trim() : null;
+
+        // Check login indicator on Twitch page
+        const isLoggedOut = !!document.querySelector('button[data-a-target="login-button"]');
+
         window.scrollBy(0, Math.round(Math.random() * 300 - 150));
-      }).catch(() => {});
+        return { hasError, errorText, isLoggedOut };
+      }).catch(() => ({ hasError: false, isLoggedOut: false }));
+
+      if (state.isLoggedOut && checkCycle % 3 === 0) {
+        log.warn('Twitch logged-out state detected during stream playback!');
+        await notify('alienware-arena: Twitch logged out during stream playback!', { kind: 'action', attachLatestScreenshot: true });
+      }
+
+      if (state.hasError) {
+        log.warn(`Twitch player error detected: ${state.errorText || 'playback issue'}; reloading page...`);
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+      }
+    } else if (activity === 'awa') {
+      // Check AWA session drop during presence
+      if (checkCycle % 2 === 0) {
+        const loggedIn = await page.evaluate(() => {
+          return !!document.querySelector('[data-is-logged-in="true"], a[href="/quests"]');
+        }).catch(() => true);
+
+        if (!loggedIn) {
+          log.warn('AWA session expired during presence watch!');
+          await notify('alienware-arena: Session expired during AWA presence!', { kind: 'action', attachLatestScreenshot: true });
+          throw new Error('AWA session expired during presence');
+        }
+      }
+
+      await page.mouse.move(
+        Math.round(100 + Math.random() * Math.max(200, cfg.width - 200)),
+        Math.round(100 + Math.random() * Math.max(200, cfg.height - 200)),
+      ).catch(() => {});
+      await page.evaluate(() => window.scrollBy(0, Math.round(Math.random() * 500 - 250))).catch(() => {});
     } else {
       await page.mouse.move(
         Math.round(100 + Math.random() * Math.max(200, cfg.width - 200)),
@@ -208,7 +289,7 @@ async function runAwaPresence() {
   if (!solved) return false;
 
   log.info(`Maintaining AWA presence for ${cfg.awa_presence_minutes} minutes`);
-  await keepPageAlive(cfg.awa_presence_minutes, 'AWA presence');
+  await keepPageAlive(cfg.awa_presence_minutes, 'AWA presence', 'awa');
   logSession('AWA', 'control-center presence', cfg.awa_presence_minutes);
   log.ok('AWA presence complete');
   return true;
@@ -381,7 +462,13 @@ try {
       if (todayTwitchTotal() >= cfg.awa_daily_target_minutes) {
         log.info(`Twitch target already met: ${todayTwitchTotal()}/${cfg.awa_daily_target_minutes} minutes`);
       } else {
-        twitch = await runTwitchSessions();
+        const twitchOk = await ensureTwitchLogin();
+        if (!twitchOk) {
+          log.warn('Skipping Twitch watching because Twitch is not signed in.');
+          twitch.errors++;
+        } else {
+          twitch = await runTwitchSessions();
+        }
       }
     }
 

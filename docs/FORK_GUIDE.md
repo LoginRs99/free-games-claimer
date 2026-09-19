@@ -127,7 +127,7 @@ Az alábbi paramétereket megadhatod környezeti változóként (`.env` vagy Doc
 | `AWA_ARP_TARGET` | `0` | Ha a teljes ARP egyenleg eléri ezt a számot, az AWA futás kihagyja a napot (`0` = kikapcsolva). |
 | `AWA_WATCH_CHUNK_MINUTES` | `30` | Hány perces blokkokban nézzen egy streamert, mielőtt újra ellenőrzi a Control Center állapotát. |
 | `AWA_TWITCH_RECHECK_MINUTES` | `10` | Ha épp senki sem élő a 2x listából, ennyi perc múlva ellenőrzi újra a Control Centert. |
-| `AWA_TWITCH_STREAMERS` | *2x streamer lista* | Vesszővel elválasztott Twitch felhasználónevek tartaléknak (`matthewsantoro,trishahershberger,mactics...`). |
+| `AWA_TWITCH_STREAMERS` | `""` (üres) | Opcionális tartalék streamer lista. Alapértelmezetten üres: tisztán automatikusan a Hive & Nexus 2x élő streamereket keresi. |
 | `AWA_SCHEDULE_HOURS` | `0` | Független napi időablak hossza órában (`0` = ki van kapcsolva az időzítő). |
 | `AWA_SCHEDULE_START` | `8` | Az AWA időablak kezdő órája (pl. `8` = 08:00). |
 | `TWITCH_CLIENT_ID` *(opcionális)* | – | Twitch Developer App Client ID (gyors API ellenőrzéshez). |

@@ -40,7 +40,7 @@ let arpBalance = null;
 let twitchToken = null;
 let twitchTokenExpiresAt = 0;
 
-const streamers = cfg.awa_twitch_streamers
+const streamers = (cfg.awa_twitch_streamers || '')
   .split(',')
   .map(s => s.trim().toLowerCase())
   .filter(s => /^[a-z0-9_]{3,25}$/i.test(s));
@@ -367,6 +367,10 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
       const now = Date.now();
       if (now - lastAwaCapCheckAt >= 5 * 60 * 1000) {
         lastAwaCapCheckAt = now;
+        log.info('Refreshing Control Center to check updated Time on Site ARP...');
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+        await page.waitForTimeout(2500);
+
         const check = await page.evaluate(() => {
           const loggedIn = !!document.querySelector('[data-is-logged-in="true"], a[href="/quests"]');
           let tosArp = null;
@@ -375,6 +379,23 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
           const tosCapEl = document.getElementById('control-center__tos-max-arp');
           if (tosArpEl && tosArpEl.textContent) tosArp = Number(tosArpEl.textContent.trim());
           if (tosCapEl && tosCapEl.textContent) tosCap = Number(tosCapEl.textContent.trim());
+
+          // Also check dailyArpData script tag if present
+          try {
+            const scripts = Array.from(document.querySelectorAll('script')).map(s => s.textContent || '');
+            for (const s of scripts) {
+              const m = s.match(/let\s+dailyArpData\s*=\s*(\{.+?\});/s);
+              if (m) {
+                const parsed = JSON.parse(m[1]);
+                if (parsed) {
+                  if (Number.isFinite(parsed.timeOnSiteArp)) tosArp = parsed.timeOnSiteArp;
+                  if (Number.isFinite(parsed.timeOnSiteCap)) tosCap = parsed.timeOnSiteCap;
+                }
+                break;
+              }
+            }
+          } catch {}
+
           return { loggedIn, tosArp, tosCap };
         }).catch(() => ({ loggedIn: true, tosArp: null, tosCap: null }));
 
@@ -387,6 +408,7 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
         if (Number.isFinite(check.tosArp) && Number.isFinite(check.tosCap)) {
           awaControlCenterState.timeOnSiteArp = check.tosArp;
           awaControlCenterState.timeOnSiteCap = check.tosCap;
+          log.status('Time on Site', `${check.tosArp}/${check.tosCap} ARP`);
           if (check.tosArp >= check.tosCap) {
             log.ok(`Time on Site ARP reached daily max during presence (${check.tosArp}/${check.tosCap} ARP)!`);
             break; // Stop waiting immediately
@@ -435,10 +457,12 @@ async function runAwaPresence() {
   });
   if (!solved) return false;
 
-  log.info(`Maintaining AWA presence for ${cfg.awa_presence_minutes} minutes`);
+  log.info(`Maintaining AWA presence for up to ${cfg.awa_presence_minutes} minutes (exits dynamically when capped)`);
+  const startTs = Date.now();
   await keepPageAlive(cfg.awa_presence_minutes, 'AWA presence', 'awa');
-  logSession('AWA', 'control-center presence', cfg.awa_presence_minutes);
-  log.ok('AWA presence complete');
+  const elapsedMinutes = Math.max(1, Math.round((Date.now() - startTs) / 60000));
+  logSession('AWA', 'control-center presence', elapsedMinutes);
+  log.ok(`AWA presence complete (${elapsedMinutes}m elapsed)`);
   return true;
 }
 
@@ -547,8 +571,12 @@ async function runTwitchSessions() {
 
     const currentStreamers = getCandidateStreamers();
     if (!currentStreamers.length) {
-      log.warn('No Twitch streamers available to watch');
-      break;
+      waitCycles++;
+      const waitMinutes = Math.max(1, cfg.awa_twitch_recheck_minutes);
+      log.info(`No 2x live streamers currently detected on Control Center; re-checking in ${waitMinutes} minute${waitMinutes === 1 ? '' : 's'}`);
+      await page.waitForTimeout(waitMinutes * 60 * 1000);
+      await readAwaLogin().catch(() => {});
+      continue;
     }
 
     let liveFound = false;

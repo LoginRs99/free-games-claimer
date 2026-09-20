@@ -14,9 +14,18 @@ const db = await jsonDb('alienware-arena.json', { days: {} });
 
 log.section(`${SITE_NAME} (v${siteVersion(SITE_ID) || '0.1'})`);
 log.status('Run mode', RUN_MODE === 'presence' ? 'AWA presence only' : RUN_MODE === 'twitch' ? 'Twitch only' : 'AWA presence + Twitch');
-log.status('AWA presence', `${cfg.awa_presence_minutes}m`);
-log.status('Twitch target', `${cfg.awa_daily_target_minutes}m`);
-log.status('Live recheck', `${cfg.awa_twitch_recheck_minutes}m`);
+const isPresenceDisabled = cfg.awa_presence_mode === 'disabled' || (cfg.awa_presence_mode === 'fixed' && cfg.awa_presence_minutes <= 0);
+const presenceSafetyLimit = cfg.awa_presence_minutes > 0 ? cfg.awa_presence_minutes : 25;
+const presenceStatusText = isPresenceDisabled
+  ? 'Disabled'
+  : cfg.awa_presence_mode === 'fixed'
+    ? `Fixed (${presenceSafetyLimit}m)`
+    : `Auto-track (5/5 cap, max ${presenceSafetyLimit}m)`;
+log.status('AWA presence', presenceStatusText);
+log.status('Twitch mode', cfg.awa_streamer_selection_mode === 'auto_2x' ? 'Auto 2x speed (Hive & Nexus)' : 'Manual streamers only');
+log.status('Twitch cap stop', cfg.awa_stop_on_twitch_cap ? 'Enabled (auto-stops on 25 ARP)' : 'Disabled');
+log.status('Twitch target', `${cfg.awa_daily_target_minutes}m safety limit`);
+log.status('Twitch chunk', `${cfg.awa_watch_chunk_minutes}m`);
 if (cfg.awa_arp_target > 0) log.status('ARP target', cfg.awa_arp_target);
 
 // Launch persistent browser context using standard upstream launchContext factory
@@ -331,7 +340,7 @@ async function ensureTwitchLogin() {
 async function keepPageAlive(minutes, label, activity = 'scroll') {
   const end = Date.now() + minutes * 60 * 1000;
   let checkCycle = 0;
-  let lastAwaCapCheckAt = 0;
+  let lastAwaCapCheckAt = Date.now();
   while (Date.now() < end) {
     checkCycle++;
     if (activity === 'twitch') {
@@ -409,8 +418,8 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
           awaControlCenterState.timeOnSiteArp = check.tosArp;
           awaControlCenterState.timeOnSiteCap = check.tosCap;
           log.status('Time on Site', `${check.tosArp}/${check.tosCap} ARP`);
-          if (check.tosArp >= check.tosCap) {
-            log.ok(`Time on Site ARP reached daily max during presence (${check.tosArp}/${check.tosCap} ARP)!`);
+          if (cfg.awa_presence_mode !== 'fixed' && check.tosArp >= check.tosCap) {
+            log.ok(`Time on Site ARP reached daily max (${check.tosArp}/${check.tosCap} ARP) — auto-stopping presence!`);
             break; // Stop waiting immediately
           }
         }
@@ -439,14 +448,17 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
 }
 
 async function runAwaPresence() {
-  if (cfg.awa_presence_minutes <= 0) {
+  const isExplicitDisabled = cfg.awa_presence_mode === 'disabled' || (cfg.awa_presence_mode === 'fixed' && cfg.awa_presence_minutes <= 0);
+  if (isExplicitDisabled) {
     if (RUN_MODE === 'presence') {
-      log.warn('AWA presence time is set to 0m (disabled). Set AWA presence time to 25m in Settings → Services → Alienware Arena to farm Time on Site ARP.');
+      log.warn('AWA presence is set to Disabled in Settings. To farm Time on Site, set AWA presence mode to "Auto-track until daily cap" in Settings → Services → Alienware Arena.');
     } else {
-      log.info('AWA presence time is set to 0m — skipping Time on Site. Set to 25m in Settings → Services → Alienware Arena to enable.');
+      log.info('AWA presence is disabled in Settings — skipping Time on Site.');
     }
     return true;
   }
+
+  const maxMinutes = cfg.awa_presence_minutes > 0 ? cfg.awa_presence_minutes : 25;
 
   // Check if Time on Site is already maxed out today
   if (Number.isFinite(awaControlCenterState.timeOnSiteArp) && Number.isFinite(awaControlCenterState.timeOnSiteCap)) {
@@ -464,9 +476,15 @@ async function runAwaPresence() {
   });
   if (!solved) return false;
 
-  log.info(`Maintaining AWA presence for up to ${cfg.awa_presence_minutes} minutes (exits dynamically when capped)`);
+  const isAuto = cfg.awa_presence_mode !== 'fixed';
+  if (isAuto) {
+    log.info(`Maintaining AWA presence in Auto-track mode (checks cap every 5m, safety limit: ${maxMinutes}m)...`);
+  } else {
+    log.info(`Maintaining AWA presence for fixed ${maxMinutes} minutes...`);
+  }
+
   const startTs = Date.now();
-  await keepPageAlive(cfg.awa_presence_minutes, 'AWA presence', 'awa');
+  await keepPageAlive(maxMinutes, 'AWA presence', 'awa');
   const elapsedMinutes = Math.max(1, Math.round((Date.now() - startTs) / 60000));
   logSession('AWA', 'control-center presence', elapsedMinutes);
   log.ok(`AWA presence complete (${elapsedMinutes}m elapsed)`);

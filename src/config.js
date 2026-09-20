@@ -139,6 +139,7 @@ export const cfg = {
   // launch-day indies before they have reviews. See #61.
   steam_skip_unrated: steam.skipUnrated ?? true,
   // alienware arena / AWA Twitch watch time
+  awa_presence_mode: awa.presenceMode || 'auto_cap',
   awa_presence_minutes: awa.presenceMinutes ?? 25,
   awa_streamer_selection_mode: awa.streamerSelectionMode || 'auto_2x',
   awa_stop_on_twitch_cap: awa.stopOnTwitchCap ?? true,

@@ -21,7 +21,9 @@ import { SITES } from './sites.js';
 // "Cannot access 'cfg' before initialization". paths.js imports nothing local.
 import { dataDir } from './paths.js';
 
-const CONFIG_FILE = dataDir('config.json');
+function configFile() {
+  return dataDir('config.json');
+}
 
 const toBool = v => v === '1' || v === 'true' || v === true;
 // EG_MOBILE is inverted in the original: absent or truthy → true, only '0'/'false' → false.
@@ -234,13 +236,14 @@ export const CONFIG_SCHEMA = [
 const schemaByPath = new Map(CONFIG_SCHEMA.map(f => [f.path, f]));
 
 export function readConfigFile() {
+  const file = configFile();
   try {
-    if (!existsSync(CONFIG_FILE)) return {};
-    const raw = readFileSync(CONFIG_FILE, 'utf8');
+    if (!existsSync(file)) return {};
+    const raw = readFileSync(file, 'utf8');
     if (!raw.trim()) return {};
     return JSON.parse(raw) || {};
   } catch (e) {
-    console.error(`[config] failed to read ${CONFIG_FILE}: ${e.message} — treating as empty`);
+    console.error(`[config] failed to read ${file}: ${e.message} — treating as empty`);
     return {};
   }
 }
@@ -273,11 +276,12 @@ function migrateLegacyKeys() {
 // Atomic write: serialize to a tempfile in the same dir, then rename. A crash
 // mid-write leaves the old file intact rather than half-truncated.
 export function writeConfigFile(obj) {
-  const dir = path.dirname(CONFIG_FILE);
+  const file = configFile();
+  const dir = path.dirname(file);
   try { mkdirSync(dir, { recursive: true }); } catch { /* already exists */ }
-  const tmp = CONFIG_FILE + '.' + process.pid + '.tmp';
+  const tmp = file + '.' + process.pid + '.tmp';
   writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
-  renameSync(tmp, CONFIG_FILE);
+  renameSync(tmp, file);
 }
 
 export function getByPath(obj, p) {
@@ -492,7 +496,7 @@ export function getSchedulerConfig() {
 }
 
 // Absolute path to the config file — scheduler's fs.watch targets this.
-export const CONFIG_FILE_PATH = CONFIG_FILE;
+export const CONFIG_FILE_PATH = configFile();
 
 // Produce the list shown in the Environment section. `reveal=true` returns
 // last-4-masked values for sensitive vars; otherwise only `{set: true|false}`

@@ -52,8 +52,9 @@
 
 import path from 'node:path';
 import { devices } from 'patchright';
-import { cfg } from './config.js';
-import { ROOT_DIR, RUNNER_NAME_RE, platformFile } from './paths.js';
+import { ROOT_DIR, RUNNER_NAME_RE, platformFile, dataDir } from './paths.js';
+
+const browserDir = suffix => (process.env.BROWSER_DIR || dataDir('browser')) + (suffix ? '-' + suffix : '');
 
 // Resolves a runner through the '#platforms/*' alias in package.json, so the
 // directory is declared once and serves both `import` and the spawned
@@ -118,8 +119,8 @@ export const SITES = [
     // cookie-import (src/panel/panel.js#deriveTargetHost) and each
     // panel-opened browser-login — both happen long after module load,
     // so this resolves to the live cfg value without a restart.
-    get loginUrl() { return `${cfg.pg_base_url}/claims`; },
-    get browserDir() { return cfg.dir.browser; },
+    get loginUrl() { return `${(process.env.PG_BASE_URL || 'https://luna.amazon.com').replace(/\/+$/, '')}/claims`; },
+    get browserDir() { return browserDir(); },
     contextOptions: null,
     defaultActive: true,
     activeEnv: 'PG_ACTIVE',
@@ -195,7 +196,7 @@ export const SITES = [
     // sends them to the free-games landing page where they actually want
     // to go to verify their library or check what's on offer.
     homeUrl: 'https://store.epicgames.com/en-US/free-games',
-    get browserDir() { return cfg.dir.browser; },
+    get browserDir() { return browserDir(); },
     contextOptions: null,
     defaultActive: true,
     activeEnv: 'EG_ACTIVE',
@@ -249,7 +250,7 @@ export const SITES = [
     // Same persistent profile as Epic Games — the Epic SSO cookies that FAB
     // relies on live here, so sharing the dir means a single Epic login
     // covers both services.
-    get browserDir() { return cfg.dir.browser; },
+    get browserDir() { return browserDir(); },
     contextOptions: null,
     // Opt-in: not everyone wants Unreal/3D marketplace assets, and the flow
     // is newly scaffolded. Mirrors AliExpress's opt-in default.
@@ -312,7 +313,7 @@ export const SITES = [
     // Monday's GOG walk to process the code. Report: amphoterism #121.
     claimOrder: 2.5,
     loginUrl: 'https://www.gog.com/en',
-    get browserDir() { return cfg.dir.browser; },
+    get browserDir() { return browserDir(); },
     contextOptions: null,
     defaultActive: true,
     activeEnv: 'GOG_ACTIVE',
@@ -419,7 +420,7 @@ export const SITES = [
     claimOrder: 4,
     loginUrl: 'https://store.steampowered.com/login/',
     homeUrl: 'https://store.steampowered.com/',
-    get browserDir() { return cfg.dir.browser; },
+    get browserDir() { return browserDir(); },
     contextOptions: null,
     defaultActive: true,
     activeEnv: 'STEAM_ACTIVE',
@@ -479,7 +480,7 @@ export const SITES = [
     // fingerprint-injected session doesn't collide with the desktop services'
     // profiles.
     loginUrl: 'https://m.aliexpress.com/p/coin-index/index.html',
-    get browserDir() { return cfg.dir.browser + '-aliexpress'; },
+    get browserDir() { return browserDir('aliexpress'); },
     contextOptions: devices['Pixel 7'],
     defaultActive: false,
     activeEnv: 'AE_ACTIVE',
@@ -546,7 +547,7 @@ export const SITES = [
     script: platformScript('microsoft'),
     claimOrder: 9,
     loginUrl: 'https://rewards.bing.com',
-    get browserDir() { return cfg.dir.browser; },
+    get browserDir() { return browserDir(); },
     contextOptions: null,
     defaultActive: true,
     activeEnv: 'MS_ACTIVE',
@@ -629,7 +630,7 @@ export const SITES = [
     // each profile independently.
     script: null,
     loginUrl: 'https://rewards.bing.com',
-    get browserDir() { return cfg.dir.browser + '-mobile'; },
+    get browserDir() { return browserDir('mobile'); },
     contextOptions: devices['Pixel 7'],
     defaultActive: true,
     activeEnv: 'MS_MOBILE_ACTIVE',
@@ -834,7 +835,7 @@ export const SITES = [
     claimOrder: 12,
     loginUrl: 'https://eu.alienwarearena.com/control-center',
     homeUrl: 'https://eu.alienwarearena.com/control-center',
-    get browserDir() { return cfg.dir.browser + '-alienware-arena'; },
+    get browserDir() { return browserDir('alienware-arena'); },
     contextOptions: null,
     defaultActive: false,
     activeEnv: 'AWA_ACTIVE',

@@ -439,7 +439,14 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
 }
 
 async function runAwaPresence() {
-  if (cfg.awa_presence_minutes <= 0) return true;
+  if (cfg.awa_presence_minutes <= 0) {
+    if (RUN_MODE === 'presence') {
+      log.warn('AWA presence time is set to 0m (disabled). Set AWA presence time to 25m in Settings → Services → Alienware Arena to farm Time on Site ARP.');
+    } else {
+      log.info('AWA presence time is set to 0m — skipping Time on Site. Set to 25m in Settings → Services → Alienware Arena to enable.');
+    }
+    return true;
+  }
 
   // Check if Time on Site is already maxed out today
   if (Number.isFinite(awaControlCenterState.timeOnSiteArp) && Number.isFinite(awaControlCenterState.timeOnSiteCap)) {

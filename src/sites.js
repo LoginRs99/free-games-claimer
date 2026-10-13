@@ -906,17 +906,26 @@ export const SITES = [
       try {
         await page.goto('https://eu.alienwarearena.com/control-center', { waitUntil: 'domcontentloaded', timeout: 20000 });
         await page.waitForTimeout(2500);
-        const awaLoggedIn = (await page.locator([
-          '[data-is-logged-in="true"]',
-          'a[href="/quests"]',
-          'a[href*="/member/"]',
-          '.user-avatar',
-          '.nav-user',
-        ].join(', ')).first().count()) > 0;
+
+        // Check if redirected to login / unauthenticated page
+        const currentUrl = page.url ? page.url() : '';
+        const isLoginRedirect = (/\/login|\/account\/login/i).test(currentUrl);
+
+        let awaLoggedIn = false;
         let awaUser = null;
-        if (awaLoggedIn) {
-          awaUser = await page.locator('.media-body, .username, [class*="username"], .user-name, [data-user-name]').first().innerText({ timeout: 2000 }).catch(() => 'member');
-          awaUser = awaUser?.trim() || 'member';
+        if (!isLoginRedirect) {
+          awaLoggedIn = await page.locator([
+            '[data-is-logged-in="true"]',
+            'a[href="/quests"]',
+            'a[href*="/member/"]',
+            '.user-avatar',
+            '.nav-user',
+          ].join(', ')).first().count() > 0;
+
+          if (awaLoggedIn) {
+            awaUser = await page.locator('.media-body, .username, [class*="username"], .user-name, [data-user-name]').first().innerText({ timeout: 2000 }).catch(() => 'member');
+            awaUser = awaUser?.trim() || 'member';
+          }
         }
 
         // Check Twitch authentication in the shared browser context via cookies
@@ -930,18 +939,49 @@ export const SITES = [
             twitchLoggedIn = true;
             twitchUser = loginCookie ? decodeURIComponent(loginCookie.value) : 'logged-in';
           }
-        } catch {}
+        } catch {
+          // Ignore cookie read errors
+        }
+
+        const details = {
+          awa: { loggedIn: awaLoggedIn, user: awaUser },
+          twitch: { loggedIn: twitchLoggedIn, user: twitchUser },
+        };
 
         if (awaLoggedIn && twitchLoggedIn) {
-          return { loggedIn: true, user: `AWA: ${awaUser} | Twitch: ${twitchUser}` };
+          return {
+            status: 'authenticated',
+            loggedIn: true,
+            user: `AWA: ${awaUser} | Twitch: ${twitchUser}`,
+            details,
+          };
         } else if (awaLoggedIn && !twitchLoggedIn) {
-          return { loggedIn: false, user: `AWA: ${awaUser} | Twitch: not signed in` };
+          return {
+            status: 'unauthenticated',
+            loggedIn: false,
+            user: `AWA: ${awaUser} | Twitch: not signed in`,
+            details,
+          };
         } else if (!awaLoggedIn && twitchLoggedIn) {
-          return { loggedIn: false, user: `AWA: not signed in | Twitch: ${twitchUser}` };
+          return {
+            status: 'unauthenticated',
+            loggedIn: false,
+            user: `AWA: not signed in | Twitch: ${twitchUser}`,
+            details,
+          };
         }
-        return { loggedIn: false };
+        return {
+          status: 'unauthenticated',
+          loggedIn: false,
+          user: null,
+          details,
+        };
       } catch (e) {
-        return { loggedIn: false, error: (e && e.message ? e.message.split('\n')[0] : String(e)).slice(0, 200) };
+        return {
+          status: 'error',
+          loggedIn: false,
+          error: (e && e.message ? e.message.split('\n')[0] : String(e)).slice(0, 200),
+        };
       }
     },
   },

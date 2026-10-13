@@ -429,12 +429,16 @@ async function checkSiteStatus(siteId) {
       extraArgs: ['--no-sandbox', '--disable-gpu'],
     }));
     const result = await site.checkLogin(page);
+    const resolvedStatus = result.status
+      ? (result.status === 'authenticated' ? 'logged_in' : result.status === 'error' ? 'error' : 'not_logged_in')
+      : (result.loggedIn ? 'logged_in' : (result.error ? 'error' : 'not_logged_in'));
     siteStatus[siteId] = {
-      status: result.loggedIn ? 'logged_in' : 'not_logged_in',
+      status: resolvedStatus,
       user: result.user || null,
+      error: result.error || null,
       checkedAt: datetime(),
     };
-    console.log(`[${datetime()}] ${site.name}: ${result.loggedIn ? `logged in as ${result.user}` : 'not logged in'}`);
+    console.log(`[${datetime()}] ${site.name}: ${result.loggedIn ? `logged in as ${result.user}` : (result.error ? `check error (${result.error})` : 'not logged in')}`);
     return { ...result, site: siteId };
   } catch (e) {
     console.error(`[${datetime()}] Check failed for ${site.name}:`, e.message);
@@ -2595,20 +2599,39 @@ function watchConfigForScheduler() {
   }
 }
 
-async function postRunSessionCheck() {
-  // After a scheduled run, probe each site. Any that come back not-logged-in
-  // get a single aggregated Pushover notification with per-site deep-links
-  // (?login=<siteId>) so tapping the right line lands the user directly in
-  // that site's Login flow instead of the dashboard root.
-  console.log(`[${datetime()}] Scheduler: verifying session health...`);
-  const results = await checkAllSites();
+async function postRunSessionCheck(targetSites = null) {
+  // After a scheduled run, probe sites (all or a specific target subset).
+  // Any that come back not-logged-in get a single aggregated Pushover notification
+  // with per-site deep-links (?login=<siteId>) so tapping the right line lands
+  // the user directly in that site's Login flow instead of the dashboard root.
+  const targetSet = targetSites ? new Set(Array.isArray(targetSites) ? targetSites : [targetSites]) : null;
+  const scopeLabel = targetSet ? Array.from(targetSet).join(', ') : 'all';
+  console.log(`[${datetime()}] Scheduler: verifying session health (${scopeLabel})...`);
+  const results = {};
+  if (targetSet) {
+    const active = activeServices();
+    for (const siteId of targetSet) {
+      if (!active.has(siteId)) continue;
+      if (activeBrowser) {
+        results[siteId] = { error: 'Browser session active, close it first.' };
+        continue;
+      }
+      results[siteId] = await checkSiteStatus(siteId);
+    }
+  } else {
+    Object.assign(results, await checkAllSites());
+  }
   const stale = [];
   for (const [siteId, r] of Object.entries(results)) {
-    if (!r || r.error) continue;
-    if (r.loggedIn === false) stale.push(siteId);
+    if (!r) continue;
+    // Skip if check failed with network/navigation error and session was not definitively unauthenticated
+    if (r.error && r.status !== 'unauthenticated' && r.loggedIn !== false) continue;
+    if (r.status === 'unauthenticated' || r.loggedIn === false) {
+      stale.push(siteId);
+    }
   }
   if (!stale.length) {
-    console.log(`[${datetime()}] Scheduler: all sessions valid.`);
+    console.log(`[${datetime()}] Scheduler: all verified sessions valid.`);
     return;
   }
   const names = stale.map(id => SITES[id]?.name || id);
@@ -2652,7 +2675,7 @@ function appendDetachedRunLog(label, type, text) {
   }
 }
 
-function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
+function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired, postRun }) {
   if (!sites || !sites.length) return { success: false, error: 'No service specified.' };
   if (detachedRuns.has(label)) {
     console.log(`[${datetime()}] Scheduler (${label}): previous run still active — skipping this tick.`);
@@ -2686,11 +2709,18 @@ function fireDetachedScheduledRun({ label, sites, extraEnv = {}, markFired }) {
     process.stderr.write(text);
     appendDetachedRunLog(label, 'stderr', text);
   });
-  child.on('close', code => {
+  child.on('close', async code => {
     detachedRuns.delete(label);
     runLog.push({ type: 'system', text: `Detached run (${label}) exited with code ${code}`, time: datetime() });
     console.log(`[${datetime()}] Scheduler (${label}): detached run exited with code ${code}.`);
     if (code === 0 && typeof markFired === 'function') markFired();
+    if (typeof postRun === 'function') {
+      try {
+        await postRun(code);
+      } catch (e) {
+        console.error(`[${datetime()}] Scheduler (${label}): postRun error:`, e.message);
+      }
+    }
   });
   return { success: true, detached: true };
 }
@@ -2933,6 +2963,7 @@ async function awaSchedulerLoop() {
           writeAwaScheduleToday(cur);
         }
       },
+      postRun: () => postRunSessionCheck(['alienware-arena']),
     });
   }
 }
@@ -10160,6 +10191,7 @@ const server = http.createServer(async (req, res) => {
             label: site,
             sites: [site],
             extraEnv,
+            postRun: () => postRunSessionCheck([site]),
           });
           sendJson(res, result);
           return;

@@ -341,6 +341,7 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
   const end = Date.now() + minutes * 60 * 1000;
   let checkCycle = 0;
   let lastAwaCapCheckAt = Date.now();
+  let twitchLogoutNotified = false;
   while (Date.now() < end) {
     checkCycle++;
     if (activity === 'twitch') {
@@ -362,7 +363,8 @@ async function keepPageAlive(minutes, label, activity = 'scroll') {
         return { hasError, errorText, isLoggedOut };
       }).catch(() => ({ hasError: false, isLoggedOut: false }));
 
-      if (state.isLoggedOut && checkCycle % 3 === 0) {
+      if (state.isLoggedOut && !twitchLogoutNotified) {
+        twitchLogoutNotified = true;
         log.warn('Twitch logged-out state detected during stream playback!');
         await notify('alienware-arena: Twitch logged out during stream playback!', { kind: 'action', attachLatestScreenshot: true });
       }

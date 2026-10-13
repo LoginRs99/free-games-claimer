@@ -17,9 +17,9 @@ console.log('ok: alienware-arena registry definition verified');
     url: () => 'https://eu.alienwarearena.com/control-center',
     goto: async () => {},
     waitForTimeout: async () => {},
-    locator: _selector => ({
+    locator: selector => ({
       first: () => ({
-        count: async () => 1,
+        count: async () => selector.includes('login-form') ? 0 : 1,
         innerText: async () => 'TestAwaUser',
       }),
     }),
@@ -46,9 +46,9 @@ console.log('ok: alienware-arena registry definition verified');
     url: () => 'https://eu.alienwarearena.com/control-center',
     goto: async () => {},
     waitForTimeout: async () => {},
-    locator: _selector => ({
+    locator: selector => ({
       first: () => ({
-        count: async () => 1,
+        count: async () => selector.includes('login-form') ? 0 : 1,
         innerText: async () => 'TestAwaUser',
       }),
     }),
@@ -141,6 +141,82 @@ console.log('ok: alienware-arena registry definition verified');
   assert.equal(res.loggedIn, false);
   assert.equal(res.details.awa.loggedIn, false);
   console.log('ok: Login redirect detected ->', res);
+}
+
+// Test 5b: In-page evaluate detecting window.user_is_logged_in = true and title check
+{
+  const mockPage = {
+    url: () => 'https://eu.alienwarearena.com/control-center',
+    goto: async () => {},
+    waitForTimeout: async () => {},
+    evaluate: async (fn) => {
+      // Mock DOM environment where window.user_is_logged_in = true
+      const origWindow = globalThis.window;
+      const origDoc = globalThis.document;
+      try {
+        globalThis.window = {
+          location: { href: 'https://eu.alienwarearena.com/control-center' },
+          user_is_logged_in: true,
+          user_username: 'ArenaChampion',
+        };
+        globalThis.document = {
+          title: 'Control Center | Alienware Arena',
+          querySelector: () => null,
+        };
+        return await fn();
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.document = origDoc;
+      }
+    },
+    context: () => ({
+      cookies: async () => [
+        { name: 'auth-token', value: 'oauth_token_val' },
+        { name: 'login', value: 'TwitchChampion' },
+      ],
+    }),
+  };
+
+  const res = await awaSite.checkLogin(mockPage);
+  assert.equal(res.status, 'authenticated');
+  assert.equal(res.loggedIn, true);
+  assert.equal(res.user, 'AWA: ArenaChampion | Twitch: TwitchChampion');
+  console.log('ok: window.user_is_logged_in global detection ->', res);
+}
+
+// Test 5c: In-page evaluate detecting unauthenticated via document.title / login form
+{
+  const mockPage = {
+    url: () => 'https://eu.alienwarearena.com/control-center',
+    goto: async () => {},
+    waitForTimeout: async () => {},
+    evaluate: async (fn) => {
+      const origWindow = globalThis.window;
+      const origDoc = globalThis.document;
+      try {
+        globalThis.window = {
+          location: { href: 'https://eu.alienwarearena.com/control-center' },
+          user_is_logged_in: false,
+        };
+        globalThis.document = {
+          title: 'Log in to your account | Alienware Arena',
+          querySelector: (sel) => sel.includes('login-form') ? {} : null,
+        };
+        return await fn();
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.document = origDoc;
+      }
+    },
+    context: () => ({
+      cookies: async () => [],
+    }),
+  };
+
+  const res = await awaSite.checkLogin(mockPage);
+  assert.equal(res.status, 'unauthenticated');
+  assert.equal(res.loggedIn, false);
+  console.log('ok: Unauthenticated login title/form detection ->', res);
 }
 
 // Test 6: Network/navigation error

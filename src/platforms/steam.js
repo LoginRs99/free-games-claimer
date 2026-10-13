@@ -6,6 +6,7 @@ import { siteVersion } from '#src/sites.js';
 import { fetchGamerPowerGiveaways, filterFor as filterGpFor, resolveGamerPowerHref } from '#src/gamerpower.js';
 import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfClean } from '#src/freegamefindings.js';
 import { loadPendingKeys, dropKey, bumpKeyAttempt } from '#src/pending-steam-keys.js';
+import { checkQualityGate, newQualityTally, recordQualityResult, formatQualityTally } from '#src/quality-lookup.js';
 
 const screenshot = (...a) => resolve(cfg.dir.screenshots, 'steam', ...a);
 
@@ -83,6 +84,7 @@ if (!cfg.debug) context.setDefaultTimeout(cfg.timeout);
 await page.setViewportSize({ width: cfg.width, height: cfg.height });
 
 const notify_games = [];
+const qualityTally = newQualityTally(); // v2.12.0 (#148)
 let user;
 
 // Steam's public storesearch JSON API — anonymous, returns matches for
@@ -560,13 +562,33 @@ try {
             }
           }
 
-          // Discoveries tab already surfaces "Key Giveaway" entries with
-          // a MANUAL coverage badge + label (per v2.8.74's forecast). The
-          // per-item Pushover notify still fires via notify_games below
-          // when worth ≥ min_price. Log line is redundant and repeats
-          // every run for the same items — silenced from the normal log.
-          // DEBUG=1 restores per-item visibility.
-          if (cfg.debug) console.debug(`GamerPower → ${entry.title}: not a /app/ URL — listing as manual action (${resolved || entry.open_giveaway_url})`);
+          // v2.11.18 (xh43k #119 followup, 2026-09-14): manual-action
+          // notifies used to fire every run for the same items with no
+          // dedup — a daily push for each non-/app/ giveaway URL,
+          // typically Alienware Arena / IndieGala key-drops that GamerPower
+          // aggregates but fgc can't automate. Concrete case: SWAPMEAT
+          // Steam Key Giveaway (hosted on alienwarearena.com, requires
+          // 25 ARP), notified every day even after keys ran out. Now:
+          // persist a synthetic `manual::<matchkey>` row in the Steam DB
+          // with status 'notified:manual-action' on first surfacing;
+          // subsequent runs short-circuit before the notify_games push.
+          // Discoveries-tab visibility unchanged — it renders separately.
+          // Reset semantics: user deletes the row to re-notify (rare;
+          // typically the giveaway has ended by then).
+          const manualId = `manual::${titleKey || matchKey(entry.title)}`;
+          const manualRow = db.data[user][manualId];
+          if (manualRow?.status === 'notified:manual-action') {
+            if (cfg.debug) console.debug(`GamerPower → ${entry.title}: manual-action already notified on ${manualRow.time} — skipping repeat push`);
+            continue;
+          }
+          db.data[user][manualId] = {
+            title: entry.title,
+            time: datetime(),
+            url: resolved || entry.open_giveaway_url,
+            status: 'notified:manual-action',
+          };
+          // Log at info once — first time we see this entry per fgc install.
+          log.info(`GamerPower → ${entry.title}: not a /app/ URL — first-notify as manual action (${resolved || entry.open_giveaway_url})`);
           notify_games.push({ title: `${entry.title} (via GamerPower)`, url: resolved || entry.open_giveaway_url, status: 'action', details: `<a href="${resolved || entry.open_giveaway_url}">Claim manually</a>` });
         }
       }
@@ -750,6 +772,20 @@ try {
       continue;
     }
 
+    // v2.12.0 (#148 @DoSpamu): opt-in cross-service quality gate. No-op
+    // when disabled or when 'steam' isn't in quality.appliesTo. Skips
+    // are terminal — DB status persists so subsequent runs short-circuit
+    // via the DB fastpath (existed/claimed check at loop top).
+    const qResult = await checkQualityGate('steam', title);
+    recordQualityResult(qualityTally, qResult);
+    if (!qResult.pass) {
+      log.skip(title, `quality gate — ${qResult.reason}`);
+      db.data[user][appId].status = `filtered:quality:${qResult.badge?.split(':')[1] || 'other'}`;
+      db.data[user][appId].qualityInfo = qResult.info;
+      skipped++;
+      continue;
+    }
+
     log.game(title, `free-to-keep${endStr}`);
 
     if (cfg.dryrun) {
@@ -829,6 +865,10 @@ try {
     display: 'alreadyOwned',
     alreadyOwned: existed,
   });
+  // v2.12.0 (#148): one aggregate line per run when the gate ran at all
+  // (per feedback_aggregate_log_verbosity). Silent no-op when disabled.
+  const qLine = formatQualityTally(qualityTally);
+  if (qLine) log.info(qLine);
 
   // Prime→Steam key drain (v2.11.0 / 2A). If Prime queued Steam keys
   // this run (or a previous run left transient failures), redeem them

@@ -17,7 +17,7 @@
 
 ## Current live state (update at end of each session)
 
-- **Version shipped:** v2.11.9 → HEAD may be past this; check `package.json` and latest git tag.
+- **Version shipped:** v2.12.10 → HEAD may be past this; check `package.json` and latest git tag.
 - **Container:** `ghcr.io/feldorn/free-games-claimer:latest`, running from `~/docker/docker-compose.yml`. Compose service name = `free-games-claimer`.
 - **Open PRs:** none.
 - **Open issues:** rolling. See `gh issue list --state open` and the 2-week close rule below.
@@ -116,6 +116,9 @@ These have all bitten the codebase. Read the memory file before touching the cor
 
 - **PANEL_HTML is a giant backtick template literal** (`feedback_panel_html_no_backticks`). Regex escapes (`\d`, `\s`, `\/`) get eaten by template evaluation — double them (`\\d`, `\\s`, `\\/`). Bare backticks in comments or strings terminate PANEL_HTML early — Node crashes at import. Regressed 4 times so far.
 - **`disabled` attribute means different things pre- vs post-click** (`feedback_disabled_state_context`). Pre-click = state signal (already-owned). Post-click = loading spinner. Never use `disabled` as a success signal in a post-click race.
+- **Diagnostic-scanner `script` is a DISPLAY name, not a site id** (`feedback_diag_script_is_display_name`). `_currentSection` is captured from `─── Section (vN) ───` headers → `"Epic Games"`. `lastRunSuccess`, `sites.js`, per-service DBs all use kebab-case ids (`"epic-games"`). `toLowerCase()` does NOT bridge the gap. Use `_resolveSiteIdFromScript()` or the stored `siteId`. Broke Tier-2 auto-dismiss for 68 days (v2.8.78 → v2.12.5).
+- **MS Store redeem is client-side buynowui, not the old PrepareRedeem API** (`project_ms_store_buynowui_flow`). Watch iframe URL slug transitions (`redeemnow` → `redeem-confirm` → `redeem-success`). Validation is silent — an invalid or consumed code just refuses to enable the Next button, no error network response to hook.
+- **`PG_RETRY_PENDING` retry-path assumes consumed on silent refusal** (`project_pg_retry_pending_semantics`). `isRetry:true` + validation timeout + no body-text hint → mark `claimed and redeemed`. Do NOT tighten this to require explicit evidence — regresses the auto-heal for the common case. Fresh-code first attempt stays conservative.
 - **Stale `cfg` in the panel** (`feedback_stale_cfg_use_describeconfig`). `cfg` is a module-load snapshot. Panel readers must live-read via `describeConfig().effective`. Subprocesses (spawned scrapers) are fine — they start with fresh `cfg`.
 - **`stripGpTail` multi-word Giveaway variants** (`feedback_stripgptail_multi_word_giveaway`). Regex must accept `(Steam) Key Giveaway`, `(Epic Games) Beta Giveaway`, `Giveaways` (plural). Bug shape: silently missed dedupes.
 - **No local shadows of shared helpers** (`feedback_no_local_shadow_of_shared_helper`). If `src/util.js` exports it, import it — never redefine locally. Silent divergence causes daily notify loops.
@@ -179,7 +182,12 @@ These have all bitten the codebase. Read the memory file before touching the cor
 
 `PG_STEAM_AUTOREDEEM`, `INDIEGALA_ACTIVE`, `PSN_ACTIVE`, `XBOX_ACTIVE`, `INDIEGALA_PAGE_URL`, `CAPTCHA_PROVIDER`, `CAPTCHA_API_KEY`, `STEAM_POINTS_SHOP_WEEKLY`.
 
+## Reference: env vars added in v2.12.x
+
+`PG_RETRY_PENDING` (v2.12.3) — opt-in; re-attempts stuck MS Store / Xbox codes in `data/prime-gaming.json` after each Prime run. Requires both a `.env` entry AND a matching `- PG_RETRY_PENDING=${PG_RETRY_PENDING:-}` line in the compose file's `environment:` block (compose doesn't propagate `.env` implicitly).
+
 ## Session hygiene
 
-- Start of session: `git status`, check for uncommitted work; `gh pr list && gh issue list` for changes since last session.
-- End of session: if version changed, update this file's "Current live state" block. If a new landmine was hit, file it in memory AND add one bullet here.
+- **Start of session:** read `project_current_status` memory FIRST — it's the rolling handoff doc with shipped version, in-flight forks, open issue queue, and recent decisions. Then `git status` for uncommitted work; `gh pr list && gh issue list` for anything new since the status snapshot.
+- **Continuously during the session (not just at end):** update `project_current_status` on every ship, every issue close/open, every fork or background task spawned, every multi-turn decision. Also update this file's "Current live state" block when the shipped version, open-PR count, or landmine list changes. See `feedback_always_record_current_status`.
+- **New landmine hit:** file it in memory AND add one bullet to the Landmines section here.

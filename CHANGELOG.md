@@ -4,6 +4,285 @@ Release notes for [Feldorn's Free Games Claimer](README.md). Most recent at the 
 
 ---
 
+## What's new in 2.12.10
+
+**Fix: network outages no longer trigger the "report this error" banner.**
+
+When the container briefly loses DNS or connectivity, every site in that run fails with a Chromium network error (`net::ERR_NAME_NOT_RESOLVED`, `ERR_INTERNET_DISCONNECTED`, `ERR_CONNECTION_RESET`, …). These were already treated as "watching" the first time, but as soon as one recurred it was promoted to a real error and the banner asked you to file a GitHub report — even though nothing in the claimer can fix a host-side DNS problem (#158).
+
+- Network-class errors now stay in the transient "watching" state no matter how often they recur. They're still listed under Alerts → Errors, so an ongoing outage is visible, but they no longer drive the banner.
+- They're auto-cleared on the service's next successful run, like other transient errors.
+- Existing entries are cleaned up too: an undecided network-class entry is swept at panel start if the service has succeeded since its last occurrence, and re-tagged as transient on its next hit otherwise.
+- The classifier is now one shared helper (`isNetworkErrorMessage` in `src/util.js`), replacing the copies of the same regex in the Epic and Microsoft runners.
+
+If you're seeing these errors regularly, check the container's DNS: `docker exec free-games-claimer getent hosts www.gog.com` should resolve. Adding `dns: [1.1.1.1, 8.8.8.8]` to the compose service bypasses a flaky local resolver.
+
+---
+
+## What's new in 2.12.9
+
+**Fix: strict hostname check for third-party discovery URLs — substring matches are gone.**
+
+The GamerPower + r/FreeGameFindings discovery pipeline previously routed third-party URLs by substring (`url.includes("gog.com")`). A crafted entry — a malicious Reddit post, or a compromised GamerPower `/open/` page — could have slipped a lookalike URL past three different filters:
+
+- `freegamefindings.js:135` already-covered-by-another-script exclude
+- `freegamefindings.js:157` per-collector include (title + domain)
+- `gamerpower.js resolveGamerPowerHref` tab-url + anchor-href check (used when the collector follows a GamerPower `/open/` redirect to capture the real claim URL)
+
+Attack shapes `url.includes("gog.com")` passes but the strict check rejects:
+- `https://gog.com.evil.tld/x` (eTLD attached to the "allowed" string)
+- `https://evil-gog.com/x` / `https://notgog.com/x` (lookalike)
+- `https://gog.com.co/x` (allowed string as a subdomain in a different TLD)
+- `https://evil.tld/?r=gog.com` (allowed string in the query, not the host)
+- `http://www.gog.com/x` (plain-HTTP downgrade)
+
+**Fix:** new `src/url-security.js` module with `urlHasAllowedHost` / `urlHasAnyAllowedHost`:
+
+- HTTPS-only (plain-HTTP rejected).
+- Strict `hostname === allowed` match, or (opt-in) `hostname.endsWith('.' + allowed)` for subdomain acceptance.
+- Case-insensitive; trailing hostname dots stripped.
+- Garbage input (non-string, unparseable, empty hostname) returns false.
+
+All three substring-match call sites switched to the strict helper with `allowSubdomains: true` (necessary because the collector-domain lists contain apex entries like `gog.com` + `amazon.com` that must still accept `www.gog.com` / `gaming.amazon.com`). `resolveGamerPowerHref` also resolves relative anchor hrefs against the page's base URL before the host check, so an on-page relative anchor can't accidentally pass.
+
+Twenty-one unit tests at `test/url-security.js` cover every attack shape above plus the legitimate paths. Run with `node test/url-security.js`.
+
+Ported from [P-Adamiec/Free-Games-Claimer-Remaster](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster)'s `src/core/url_security.py` — credit to that project's author for the pattern. The P-Adamiec file carries a comment that this exact substring issue once triggered a CodeQL alert in the upstream repo; porting the fix here closes the same class of alert at our own call sites.
+
+---
+
+## What's new in 2.12.8
+
+**Fix: Prime Gaming login is now robust to Amazon's remembered-account chooser + empty login-error alerts.** Pulled from upstream [vogler/free-games-claimer#595](https://github.com/vogler/free-games-claimer/pull/595) by @davideasaf — just the Prime-side guards.
+
+Two latent crashes in the Prime login flow:
+
+1. **`src/platforms/prime-gaming.js:80`** did `page.fill('[name=email]', email)` unconditionally. Amazon's account chooser skips the email step entirely when the account is remembered — the `[name=email]` input isn't rendered, and the fill throws. Fix: wrap in `isVisible()` so the email step is skipped when Amazon already has it.
+
+2. **`src/platforms/prime-gaming.js:85-91`** gated the login-error check on `waitForURL('**/ap/signin**')`, which also matches the initial navigation to the signin page BEFORE any error is rendered. The subsequent `.first().innerText()` on `.a-alert-content` then threw on an empty match set. Fix: gate on `loginError.waitFor({ state: 'visible' })` (the actual alert element), then `.innerText()`. Also wraps the whole chain in `.catch(_ => {})` so a timeout on the successful-login path doesn't surface as an unhandled rejection.
+
+Credit to @davideasaf for the upstream patch. GOG-side changes from PR #595 were not pulled — Chris's fork's GOG login (multi-selector + API/cookie username fallback) is already more robust than the PR's addition.
+
+---
+
+## What's new in 2.12.7
+
+**Fix: Alerts-tab Dismiss on a Prime pending code sticks across the next GOG / Prime run.**
+
+Dismissing a pending Prime redemption from the Alerts tab writes `status: "dismissed"` to the entry. The panel's `PRIME_PENDING_TERMINAL_RX` correctly treats that as terminal, so the Alerts tab + HA sensors drop it immediately — but the per-script filters in `prime-gaming.js` and `gog.js` still used the narrow `/redeemed|expired|invalid/i`, so:
+
+- `gog.js` would re-probe the dismissed GOG code on its next run. If GOG's probe captcha-gated it again, `redeemAttempts` incremented and the entry eventually overwrote `dismissed` with `claimed, redeem retries exhausted` — surfacing a Pushover notification the user had explicitly dismissed.
+- `prime-gaming.js` would surface a dismissed non-GOG code (MS Store, Xbox, Legacy Games) in the daily pending-redeem Pushover. GOG dismissed codes slipped through only because the `isAutoRetryingGogCode` upstream filter happened to hide them.
+
+**Fix:** add `|dismissed` to the two `gog.js` regexes (`gog.js:574` library reconcile, `gog.js:629` probe filter) and the one `prime-gaming.js:290` pending-notify filter. User-intent dismiss is now terminal everywhere, matching the panel's shared superset. Updated the panel-side comment that incorrectly asserted `prime-gaming.js` filtered `dismissed` upstream (true for GOG via the auto-retry gate; false for MS Store / Xbox / Legacy).
+
+Hit live during @feldorn's DOOM/GOG dismiss — Alerts dropped the entry, but tomorrow's GOG run would have ignored the dismiss and probed anyway. One of the regex-drift traps the shared `PRIME_PENDING_TERMINAL_RX` constant was supposed to prevent (see `feedback_no_local_shadow_of_shared_helper`).
+
+---
+
+## What's new in 2.12.6
+
+**Fix: Prime Gaming claim locators are locale-proof ([#157](https://github.com/feldorn/free-games-claimer/issues/157) @h1nnak).**
+
+@h1nnak hit a 60s timeout on `a:has-text("Claim")` inside the FGWP (Free Games with Prime) external-offer card on a German Prime account. Amazon's Prime UI translates the "Claim" button label per locale (German sees "Anfordern" or similar), so the English-text locator never matched and the external redemption loop crashed before fetching the game slug.
+
+**Fix:** replace the English-only text match with the structural `data-a-target="FGWPOffer"` attribute that Amazon already uses to tag these elements for their own analytics — the parent card locator at `.item-card__action:has(…[data-a-target="FGWPOffer"])` was already relying on it, so swapping the inner selector is a strict improvement (same element, locale-independent). Applied to both the internal claim click and the external slug fetch:
+
+- `src/platforms/prime-gaming.js:484` — internal: `.tw-button:has-text("Claim")` → `button[data-a-target="FGWPOffer"]`
+- `src/platforms/prime-gaming.js:502` — external: `a:has-text("Claim")` → `a[data-a-target="FGWPOffer"]`
+
+**Scope note:** this clears the specific locator @h1nnak reported. Other English-only locators remain downstream (`"Collected"` already-claimed count, `"Get game"` / `"Complete Claim"` buy-box CTA, `"Success"` / `"You collected this"` success text, `"Get in-game content"` DLC path). Those haven't surfaced in a diagnostic report yet — happy to iterate if the next run on a non-English account hits one.
+
+---
+
+## What's new in 2.12.5
+
+**Fix: Tier-2 auto-dismiss now actually clears one-off script errors.**
+
+Since v2.8.78 shipped the "transient-likely" diagnostic filter, the recorder has looked up the wrong key when deciding whether an error's service had prior success:
+
+- Scanner picks `script` from the log-header regex (`─── Epic Games (v2.2) ──`) → display name `"Epic Games"`.
+- `_recordDiagnosticError` then read `lastRunSuccess["epic games"]` (lowercased display name).
+- But `lastRunSuccess` and every `sites.js` registry entry are keyed by the kebab-case id `"epic-games"`.
+
+Result: every fresh single-occurrence error recorded since v2.8.78 got `transientLikely: false`, the banner-suppression + auto-dismiss on next-success path never fired, and every count-1 script blip has sat in the Diagnostics/Alerts list until the user manually shared or dismissed it. In @feldorn's DB an Epic Games `page.goto: Timeout 60000ms exceeded` from 2026-08-28 was still showing 30 days later despite ~30 clean Epic runs in the meantime.
+
+**Fix:**
+
+1. **Resolver.** New `_resolveSiteIdFromScript()` walks `SITE_REGISTRY` (< 20 rows) and returns the site id for a display-name or id string. Called from both the recorder and the sweep.
+2. **Recorder.** `_recordDiagnosticError` now stores the resolved `siteId` on new entries and backfills it on existing ones, so future lookups don't depend on the display-name string round-trip.
+3. **Sweep.** `_sweepTransientDiagnostics` matches by `entry.siteId` (with the resolver as a legacy fallback), so it actually finds the entries recorded for the site that just succeeded.
+4. **One-time boot cleanup.** New `_sweepStaleUndecidedDiagnostics()` runs after diagnostics load: any undecided count-1 entry whose resolved site has a `lastRunSuccess` timestamp AFTER `firstSeen` is swept and logged. This purges the historical accumulation from the pre-fix window without waiting for the next occurrence of each dead fingerprint. Idempotent — safe to keep running on every boot.
+
+Only sweeps count-1 undecided entries where a later success is on record for the same site; anything the user has acted on (Share / Dismiss / etc.) and anything with count ≥ 2 (real recurring signal) stays put.
+
+---
+
+## What's new in 2.12.4
+
+**Fix: `PG_RETRY_PENDING` retries now heal codes MS rejects at client-side validation.**
+
+v2.12.3 shipped the `PG_RETRY_PENDING` self-heal loop for stuck MS Store codes. First live run against @feldorn's DOOM Eternal (already redeemed manually during the v2.12.3 investigator) reported `1 retried, 0 healed, 1 still pending` — helper returned `redeem (validation failed)` because Next never enabled (MS's client-side validation refused the already-consumed code), but that outcome had no `dbStatus` update, so the entry stayed at `claimed` and the daily nag continued. Regressed from the intended "retry-heals-terminal" behavior.
+
+**Fix:**
+
+1. **Body-text scan on validation-fail.** When Next doesn't enable within 10s, `attemptMsStoreRedeem` now reads the iframe body and pattern-matches for terminal indicators:
+   - "already own" / "already redeem" / "used by" / "is already" → `claimed and redeemed` (terminal)
+   - "expired" / "no longer valid" → `claimed:token-invalid` (terminal)
+   - "invalid" / "not recognized" / "check…code" → `claimed:token-invalid` (terminal)
+2. **Retry-path default.** When no hint text is present AND the helper was called from the `PG_RETRY_PENDING` loop (`isRetry: true`), assume the code was consumed since capture and mark `claimed and redeemed`. Reasoning: retry-pool codes were valid when Prime captured them; a later "no" from MS overwhelmingly means the code got consumed in the meantime (self, MS's own re-attempt, or user manual redemption). Fresh-code first-attempt path stays conservative (no dbStatus change) — a true invalid-code case there deserves the extra caution.
+
+**Result:** on the next Prime run with `PG_RETRY_PENDING=1`, @feldorn's DOOM Eternal flips to `claimed and redeemed` (terminal), drops out of the pending-notify list, disappears from the Alerts tab's Pending Redemptions section. Daily nag stops.
+
+Preserves the safer fresh-code behavior — a hypothetical first-time capture of a truly invalid code still surfaces as manual-verify, not silently marked terminal.
+
+---
+
+## What's new in 2.12.3
+
+**Feature: MS Store / Xbox Prime-code auto-redemption rewritten against the current UI + new `PG_RETRY_PENDING=1` self-heal flag.**
+
+Long-standing pattern where fgc captured a Prime-provided MS Store code (e.g. DOOM Eternal) but then couldn't complete the external redemption is fixed. Root cause: Microsoft moved the redemption UI from a network-API-driven flow (`store-web.dynamics.com/v1.0/Redeem/PrepareRedeem` + `RedeemToken`) to a fully client-side React app served from `www.microsoft.com/store/purchase/buynowui/`. The old `waitForResponse` for those endpoints timed out at 60s because MS no longer fires network calls at those hosts — the whole state machine runs in-iframe, with the iframe's URL slug as the signal.
+
+**Investigation (2026-09-27):** drove the full flow with @feldorn's DOOM Eternal code via a scratch investigator (`data/mstore-investigate.mjs`), capturing every network request + iframe URL transition + button state. Full network + UI capture archived in the report. Redemption succeeded live, confirming the observed flow works end-to-end.
+
+**Current MS Store flow (as of 2026-09-27):**
+
+| iframe URL slug | UI state |
+|---|---|
+| `.../buynowui/redeemnow` | `[name=tokenString]` input + disabled `Next` button |
+| `.../buynowui/redeem-confirm` | product info + `Cancel` / `Confirm` buttons |
+| `.../buynowui/redeem-success` | "You're good to go" + "X is ready for you" |
+| `.../buynowui/redeem-{err,fail,invalid,expired}` | error state (defensive — patterns matched, exact slug label unobserved) |
+
+**New helper:** `attemptMsStoreRedeem(page2, code)` in `src/platforms/prime-gaming.js` waits for iframe URL transitions instead of network responses. Fills code → waits for Next enabled → clicks → waits for iframe to leave `redeemnow` → dispatches by terminal slug:
+- `redeem-success` on Next → already-redeemed shortcut (rare)
+- `redeem-confirm` → click Confirm → wait for `redeem-success` → done
+- `redeem-err/fail/invalid/expired` → parse error text, mark DB `claimed:token-invalid` (terminal — stops re-nagging)
+- Anything else → unconfirmed state, DB stays `claimed`, still surfaces in Alerts
+
+**New flag: `PG_RETRY_PENDING=1`.** Self-heal path for entries already stuck in `data/prime-gaming.json` with status `claimed` (external redemption never completed). On each Prime run, retries the external redemption via `attemptMsStoreRedeem`. Successful retries flip to `claimed and redeemed` (terminal). Codes MS says are invalid flip to `claimed:token-invalid` (terminal). Anything ambiguous stays `claimed` and shows in the daily reminder.
+
+Default off — existing deploys keep the "capture code, tell user to redeem manually" behavior unless they opt in via env or `panel.pg.retryPending: true` in config.
+
+**Migration for existing stuck codes:** users on `PG_RETRY_PENDING=1` who already redeemed their pending code manually (typed it at `account.microsoft.com/billing/redeem` in a browser) will see MS report "already redeemed" on the next Prime run; fgc auto-flips the DB status and the daily nag stops without any user action.
+
+**Not changed:** GOG's `redeem.gog.com` API is stable and still uses the network-response flow. Xbox uses the same `www.microsoft.com/store/purchase/buynowui/` UI as MS Store, so the new helper covers both.
+
+---
+
+## What's new in 2.12.2
+
+**Fix: Prime pending-redeem entries with status `'claimed'` now surface in the Alerts tab ([#155](https://github.com/feldorn/free-games-claimer/issues/155) @jcubby86).**
+
+Reported live 2026-09-25: DOOM Eternal MS-Store redeem code was firing daily Pushover notifications for 5+ days with no way to dismiss. jcubby86 opened the Alerts tab expecting to find Mark redeemed / Dismiss buttons (they exist and work) — but the entire "Pending Redemptions" section was empty. Their `#alertsRedeems` div rendered, just with no rows.
+
+**Root cause:** two-regex drift. `src/panel/panel.js` had `/claimed|redeemed|expired|invalid|dismissed|retries exhausted/i` as the terminal-status filter for pending-redeem lookups. `src/platforms/prime-gaming.js` had `/redeemed|expired|invalid/i` for the same purpose. When Prime successfully claims a code from Amazon but the external redemption (MS Store, GOG, Xbox etc.) still needs manual action, the entry's status is `'claimed'` — which prime-gaming.js correctly treats as pending (fires the daily notification), but panel.js wrongly treated as terminal (hidden from Alerts). Result: user gets nagged daily but has no UI to make it stop.
+
+**Fix:** two-part.
+
+1. Removed `claimed` from panel.js's terminal regex. Entries with status `'claimed'` now show in Alerts → Pending Redemptions with the same Mark redeemed / Dismiss buttons as other pending entries.
+2. Extracted the regex to a single module-scope constant (`PRIME_PENDING_TERMINAL_RX`) referenced by all three sites in panel.js that previously each had their own copy. Drift can't recur without changing the shared constant. Filed under `feedback_no_local_shadow_of_shared_helper` — one of three panel copies used to have subtly different tokens than the other two; even after the fix, keeping three separate copies would guarantee this recurs. One authoritative constant, three references.
+
+Affects the Alerts tab pending-redeem section, the notification-count badge (`/api/state.notifications`), and the HA `/api/hass/sensors` `pending_prime_redeems` count.
+
+@jcubby86: after pulling `:latest` on v2.12.2+, DOOM Eternal will appear in Alerts → Pending Redemptions. Click **Mark redeemed** (you already entered the code externally) or **Dismiss** (stop nagging without confirming) to clear the daily notification.
+
+---
+
+## What's new in 2.12.1
+
+**Fix: corrupt `data/*.json` no longer crashes the whole claim script at boot ([#156](https://github.com/feldorn/free-games-claimer/issues/156) @coolius).**
+
+Reported live 2026-09-25: both `data/gog.json` and `data/steam.json` got zeroed out on @coolius's host (typical cause: filesystem crash / power loss / disk-full-mid-write), and every daily run for two+ weeks died at DB-load with:
+
+```
+SyntaxError: Unexpected token '', ""... is not valid JSON
+    at JSONFile.parse
+    at JSONFilePreset
+    at file:///fgc/src/platforms/gog.js:52
+```
+
+Epic + Prime worked fine because their DBs were intact — only GOG + Steam were bricked, but nothing in fgc knew to recover.
+
+**Fix:** wrapped the `jsonDb()` helper in `src/util.js` with a parse-error catch. On a SyntaxError-family failure, the bad file is rotated aside to `<name>.corrupt.<ISO-timestamp>` (preserving forensic evidence — never silently deleted), a warn is logged, and the DB is re-initialised with the module's default schema. Non-parse errors (EACCES, EIO, EROFS) still throw — those are ops issues that starting fresh wouldn't fix. If the rotate itself fails (rare — read-only mount, permissions), fgc falls back to deleting the bad file so the run can continue; if delete also fails, the original parse error re-throws so the user sees the real problem.
+
+Applies to every DB fgc reads through `jsonDb()` — per-service claim DBs (steam.json, gog.json, epic-games.json, prime-gaming.json, fab.json), state files (runs.json, scheduler-state.json, discoveries-state.json, github-watch.json, quality-lookup-cache.json, etc.). One helper, one wrap, universal coverage.
+
+**Migration:** existing corrupt files auto-recover on next run. New `<name>.corrupt.<timestamp>` files may appear alongside the fresh DBs — safe to delete once you've confirmed everything's working, or keep for debugging.
+
+---
+
+## What's new in 2.12.0
+
+**Feature: cross-service Steam-lookup quality filter ([#148](https://github.com/feldorn/free-games-claimer/issues/148) @DoSpamu).**
+
+Opt-in pre-claim gate that consults Steam as a single quality-signal source across every enabled claim script. Skips games whose Steam review-% and/or Metacritic score falls below your threshold, whose base price is at or below your price floor, or (further opt-in) that don't have a Steam page at all. Solves the "free game with 12 negative reviews still takes a library slot" problem — filters shovelware before it fills your library.
+
+**Design (per the #148 thread, agreed with @DoSpamu):**
+
+- **Single lookup source = Steam.** >95% of anything worth filtering also has a Steam SKU. Metacritic/OpenCritic/IGDB as primary sources have the wrong failure mode: the exact shovelware you want to filter is the stuff nobody reviewed, so those come back empty *precisely when you need them*. Steam has the broadest coverage.
+- **Two independent gates, both opt-in:**
+  - **Score gate:** normalise Steam review-% + Metacritic /100 to 0-10, take the LOWER of the two if both present. Skip if lowest < `quality.minScore` (default 5). Reasoning: 5 = skip clearly-bad, 8 = strict / DoSpamu-style.
+  - **Price gate:** skip if base price ≤ `quality.minBasePrice` (default $2), OR game is permanently-free-to-play. Catches the "no reviews at all" shovelware category that no score filter would ever touch.
+- **Third opt-in:** `quality.skipUnmatched` (default off) — skip when no Steam page found. Default off = safer (some good non-Steam-exclusive titles just aren't listed on Steam).
+- **Per-service opt-in via `quality.appliesTo`** — comma-separated list of `epic-games, gog, steam, prime-gaming, fab`. Empty default = gate OFF everywhere even if `enabled=true`. Safety belt so users who enable then forget to pick services don't accidentally filter.
+- **RAWG fallback deferred** per the thread — Steam-only in v1; add second lookup if the "no Steam page" gap actually bites users.
+
+**Implementation:**
+
+- New `src/quality-lookup.js` — three anonymous Steam API calls per uncached title (storesearch → appdetails → appreviews), results cached in `data/quality-lookup-cache.json` with a 30-day TTL. `checkQualityGate(service, title)` helper is called from all 5 claim scripts (epic-games, gog, steam, prime-gaming, fab) right at the decision point before the claim click. Silent no-op when the gate is disabled or the service isn't in `appliesTo`.
+- Skipped items get a terminal DB status of `filtered:quality:<badge>` (`price`, `score`, `no-steam-page`, `free-to-play`) plus a `qualityInfo` object recording the exact scores/price that triggered the skip. Terminal marking prevents re-lookup on subsequent runs — DB fastpath short-circuits.
+- One aggregate log line per run (per `feedback_aggregate_log_verbosity`): `Quality filter: checked=N passed=M skipped=K (price=X, score=Y, no-steam-page=Z)`. Silent when no games consulted the gate.
+- New Settings → Advanced → **Quality filter (Steam-lookup)** group with 5 fields: enable toggle, applies-to services list, min score, min price, skip-unmatched. Env-var equivalents: `QUALITY_ENABLED`, `QUALITY_MIN_SCORE`, `QUALITY_MIN_BASE_PRICE`, `QUALITY_SKIP_UNMATCHED`, `QUALITY_APPLIES_TO` (comma-separated).
+
+**Backward compatible:**
+
+- All defaults OFF/EMPTY — no existing deploy silently starts filtering on upgrade.
+- New DB fields (`filtered:quality:*` status, `qualityInfo` object) are additive; existing DB rows unaffected.
+- Cache file created on first lookup only; nothing to migrate.
+
+**Not shipped in v1 (follow-up ideas welcome):**
+
+- Discoveries-tab `QUALITY` badge with per-item hover-tooltip showing the score/price that triggered the skip. Rendering works today (`filtered:quality:*` status is a valid DB state) but a proper badge with reason exposure is deferred to v2.12.1.
+- Per-service score overrides (some users may want minScore=7 for Prime but minScore=4 for GOG). One global threshold in v1.
+- RAWG fallback for the "no Steam page" case.
+
+---
+
+## What's new in 2.11.19
+
+**Fix: MS Store Prime→Store redemption timeout no longer crashes the entire Prime run.**
+
+Live report from @feldorn 2026-09-18: DOOM Eternal Prime→MS Store handoff — `page.waitForResponse: Timeout 60000ms exceeded while waiting for event "response"` — bubbled up as an unhandled exception, killed the whole Prime run mid-way, and posted a diagnostic banner requiring manual dismissal. The prior game in the same batch (Wall World 2) had already claimed successfully, so Prime itself was fine — only the MS-Store handoff choked.
+
+**Root cause:** the two `page.waitForResponse` calls in `prime-gaming.js` for `store-web.dynamics.com/v1.0/Redeem/PrepareRedeem` and `.../RedeemToken` had no try/catch. Any 60s timeout — whether from a transient MS backend hiccup, a Cloudflare / bot-check intercept, or MS quietly deprecating `store-web.dynamics.com` in favor of the newer `redeem.microsoft.com` / `xbox.com/redeem` hosts — threw straight up out of the Prime pass.
+
+**Fix:** wrap both `waitForResponse` calls in try/catch. On timeout the code logs cleanly (`MS Store PrepareRedeem endpoint didn't respond in 60s — redeem manually at <url>`), leaves `redeem_action` at its default `'redeem'` value — which the existing needsManual tally at line ~505 already handles as "surface the redeem URL + code so the user can redeem manually" — and falls through to the standard `page2.close()` + notification path. Same defensive pattern the login-required branch (line 424) has always used.
+
+**Behavior change:**
+- **Happy path:** unchanged (still auto-redeems successfully when MS responds).
+- **Old timeout behavior:** whole Prime run dies + diagnostic banner + entire batch's downstream games (if any) skipped.
+- **New timeout behavior:** the one stuck game gets marked "redeem manually" with a Pushover push containing the code + redeem URL, and every other game in the batch continues processing normally.
+
+Not extending the same guard to the GOG paths (lines 381 + 404) in this ship — no reports there, staying scope-tight. Will iterate if GOG's endpoints start timing out too.
+
+---
+
+## What's new in 2.11.18
+
+**Fix: GamerPower manual-action pushes no longer fire daily for the same giveaway ([#119](https://github.com/feldorn/free-games-claimer/issues/119) xh43k follow-up).**
+
+@xh43k reported daily Pushover notifications for **"SWAPMEAT Steam Game Key Giveaway (via GamerPower)"** — an Alienware Arena promo that GamerPower labels "Steam" (the key is for a Steam game) but distributes via `alienwarearena.com/ucf/show/...` under an ARP-points redemption gate. fgc's Steam runner didn't have a Steam `/app/<id>/` URL to visit, so it fell through to the manual-action notify path — and that path had no dedup. Every daily run re-pushed the same "claim manually" alert for the same expired/locked giveaway.
+
+**Fix:** synthesise a `manual::<matchkey>` row in `data/steam.json` with `status: 'notified:manual-action'` on first surfacing. Subsequent runs short-circuit before the `notify_games.push` — one notification per giveaway per fgc install, then silence forever (or until the user deletes the row to re-notify, which is rare — by then the promo has usually ended anyway). Discoveries-tab visibility is unaffected: the tab renders manual-action items separately, so users can still see them if they want to try claiming through the aggregator's platform.
+
+Same terminal-marking pattern used for `skipped:requires-base-game` in v2.8.79 (also from #119) and `skipped:not-free` in the price-filter path. Reuses the existing Steam DB — no new file, no new schema.
+
+**Migration note for existing deploys:** entries that got re-notified before v2.11.18 will now stop after their next run (which writes the synthetic row). No manual cleanup needed.
+
+---
+
 ## What's new in 2.11.17
 
 **Fix: Epic goto hang when a previous game's checkout modal is still open ([#151](https://github.com/feldorn/free-games-claimer/issues/151) hyperactive68 on v2.11.16).**

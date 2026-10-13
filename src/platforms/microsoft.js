@@ -2,7 +2,7 @@ import { devices } from 'patchright';
 import { launchContext, gotoWithRetry } from '#src/browser.js';
 import { authenticator } from 'otplib';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { delay, datetime, prompt, notify, log, dataDir, jsonDb } from '#src/util.js';
+import { delay, datetime, prompt, notify, log, dataDir, jsonDb, isNetworkErrorMessage } from '#src/util.js';
 import { cfg } from '#src/config.js';
 import { describeConfig } from '#src/app-config.js';
 import { siteVersion } from '#src/sites.js';
@@ -810,7 +810,7 @@ function isRecoverableMsNavError(err) {
   const msg = String(err?.message || err);
   return /Target page, context or browser has been closed/i.test(msg)
       || /interrupted by another navigation/i.test(msg)
-      || /ERR_ADDRESS_UNREACHABLE|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ERR_NETWORK_CHANGED|ERR_CONNECTION_RESET|ERR_TIMED_OUT/i.test(msg);
+      || isNetworkErrorMessage(msg);
 }
 
 async function claimPendingBonusPoints(page) {

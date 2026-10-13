@@ -189,6 +189,15 @@ export const cfg = {
   // /account/registerkey using the Steam-side authenticated session. Off by
   // default — keys stay in the manual-redeem notification path when disabled.
   pg_steam_autoredeem: process.env.PG_STEAM_AUTOREDEEM === '1' || pg.steamAutoredeem === true,
+  // v2.12.3: self-heal path for MS Store / Xbox pending codes stuck in
+  // DB as 'claimed' (auto-redemption was attempted but never confirmed).
+  // On each Prime run, re-attempt external redemption for each pending
+  // code via the new attemptMsStoreRedeem helper. Successful retries
+  // flip status to 'claimed and redeemed'; rejected codes to
+  // 'claimed:token-invalid' (both terminal). Default off — existing
+  // deploys keep the "capture code, tell user to redeem manually"
+  // behavior unless they opt in.
+  pg_retry_pending: process.env.PG_RETRY_PENDING === '1' || pg.retryPending === true,
   // Max cross-run retries for the GOG auto-redeem loop in gog.js. When GOG's
   // /v1/bonusCodes/ returns reason: "captcha" (their rate-limit signal), the
   // code stays pending and gog.js retries on the next daily run. Default 3.

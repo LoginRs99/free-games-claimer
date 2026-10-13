@@ -3,7 +3,7 @@ import net from 'node:net';
 import { spawn, execFile } from 'node:child_process';
 import { watch, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { datetime, notify, jsonDb, normalizeTitle, cleanProfileLocks, readDigestBuffer, markDigestFlushed, stripGpTail, dataDir, rootDir } from '#src/util.js';
+import { datetime, notify, jsonDb, normalizeTitle, cleanProfileLocks, readDigestBuffer, markDigestFlushed, stripGpTail, dataDir, rootDir, isNetworkErrorMessage } from '#src/util.js';
 import { launchContext } from '#src/browser.js';
 import { cfg } from '#src/config.js';
 import { describeConfig, patchConfig, describeEnv, getSchedulerConfig, CONFIG_FILE_PATH, readConfigFile, writeConfigFile, setByPath as cfgSetByPath, deleteByPath as cfgDeleteByPath } from '#src/app-config.js';
@@ -22,6 +22,19 @@ const NOVNC_PORT = process.env.NOVNC_PORT || 6080;
 // can't reach it). When set, buildNovncUrl() returns this verbatim and
 // skips host/port assembly. Issue #20.
 const NOVNC_URL = (process.env.NOVNC_URL || '').replace(/\/+$/, '');
+
+// v2.12.2 (jcubby86 #155): shared filter for Prime pending-redeem entries.
+// Extracted from three previously-duplicated copies in this file so drift
+// stops happening (v2.12.2 fixed a bug where all three copies included
+// `claimed`, hiding DOOM Eternal + similar from the Alerts tab / HA
+// sensors while the daily Prime run kept notifying about them). Must stay
+// in sync with prime-gaming.js + gog.js `/redeemed|expired|invalid|dismissed/i`
+// — this superset adds `retries exhausted` (GOG retry-loop end state),
+// which prime-gaming.js intentionally surfaces as a pending notification.
+//
+// Filed under feedback_no_local_shadow_of_shared_helper — regex drift
+// across duplicated logic. Also see feedback_check_both_code_paths.
+const PRIME_PENDING_TERMINAL_RX = /redeemed|expired|invalid|dismissed|retries exhausted/i;
 // v2.11.12: legacy env-plaintext still supported. The panel bcrypt-hashes
 // it at boot into a memory-only variable; Settings-configured hash in
 // config.json takes precedence when both are set. `VNC_PASSWORD` fallback
@@ -908,6 +921,25 @@ function _captureErrorContext() {
   }
 }
 
+// The scanner pulls `script` from the ─── Section (v2.x) ─── log header,
+// which is the display name ("Epic Games", "Prime Gaming"). lastRunSuccess
+// and the sites.js registry key on the site id ("epic-games"). Resolve one
+// to the other so Tier-2 auto-dismiss actually matches. Legacy entries
+// stored the display name in `script` with no `siteId` — the resolver
+// covers those by walking the registry once per call (registry is <20 rows,
+// cost is negligible). Returns null if nothing matches; callers must
+// tolerate that (services with idiosyncratic headers, or entries recorded
+// before their site existed in the registry).
+function _resolveSiteIdFromScript(script) {
+  if (!script) return null;
+  const key = String(script).trim().toLowerCase();
+  for (const s of SITE_REGISTRY) {
+    if (String(s.name || '').toLowerCase() === key) return s.id;
+    if (String(s.id || '').toLowerCase() === key) return s.id;
+  }
+  return null;
+}
+
 function _recordDiagnosticError(script, errorClass, message, stackLines) {
   if (!diagnosticsDb || !diagnosticsDb.data) return; // not loaded yet
   if (!diagnosticsDb.data.enabled) return;            // user opted out via Never Share
@@ -931,11 +963,17 @@ function _recordDiagnosticError(script, errorClass, message, stackLines) {
   // Two ways an entry loses the tag: (a) it recurs (count >= 2) — see
   // else branch below, which promotes it to a real error; (b) the same
   // service runs successfully again — swept in recordLastRunSuccess.
-  const siteKey = (script || '').toLowerCase();
-  const priorSuccess = siteKey && lastRunSuccess && lastRunSuccess[siteKey];
+  const siteId = _resolveSiteIdFromScript(script);
+  const priorSuccess = siteId && lastRunSuccess && lastRunSuccess[siteId];
+  // Network-layer failures (DNS, link down — see NETWORK_ERROR_RE) are
+  // always transient, even on recurrence: intermittent host DNS recurs by
+  // nature and there's nothing in the code to report (#158). They stay
+  // listed with the "watching" pill and clear on the service's next success.
+  const networkClass = isNetworkErrorMessage(message);
   if (!errors[fp]) {
     errors[fp] = {
       script: script || 'unknown',
+      siteId: siteId || null,
       errorClass: errorClass || 'Error',
       message: message.slice(0, 500),
       stack: Array.isArray(redactedStack) ? redactedStack.slice(0, 50).join('\n').slice(0, 6000) : '',
@@ -944,11 +982,12 @@ function _recordDiagnosticError(script, errorClass, message, stackLines) {
       lastSeen: nowIso,
       count: 1,
       decided: null,
-      transientLikely: !!priorSuccess,
+      transientLikely: !!priorSuccess || networkClass,
     };
   } else {
     errors[fp].lastSeen = nowIso;
     errors[fp].count = (errors[fp].count || 0) + 1;
+    if (siteId && !errors[fp].siteId) errors[fp].siteId = siteId; // backfill legacy
     if (Array.isArray(redactedStack) && redactedStack.length) {
       errors[fp].stack = redactedStack.slice(0, 50).join('\n').slice(0, 6000);
     }
@@ -958,7 +997,9 @@ function _recordDiagnosticError(script, errorClass, message, stackLines) {
     errors[fp].context = _captureErrorContext();
     // Recurrence promotes it out of transient-likely — this fingerprint
     // has now been seen more than once, so treat as a real actionable error.
-    if (errors[fp].transientLikely) errors[fp].transientLikely = false;
+    // Network-class errors are the exception (re-tagged here so entries
+    // recorded before #158 get picked up on their next hit).
+    errors[fp].transientLikely = networkClass && !errors[fp].decided;
   }
   // Best-effort persist; failures here don't block the run.
   diagnosticsDb.write().catch(e => console.warn(`[${datetime()}] diagnostics-state write failed: ${e.message}`));
@@ -2193,13 +2234,52 @@ function _sweepTransientDiagnostics(siteId) {
     const e = errs[fp];
     if (!e || !e.transientLikely) continue;
     if (e.decided) continue; // user acted — leave it
-    if (String(e.script || '').toLowerCase() !== target) continue;
+    const entrySiteId = e.siteId || _resolveSiteIdFromScript(e.script);
+    if (String(entrySiteId || '').toLowerCase() !== target) continue;
     delete errs[fp];
     removed++;
   }
   if (removed) {
     diagnosticsDb.write().catch(err => console.warn(`[${datetime()}] diagnostics-state sweep write failed: ${err.message}`));
     console.log(`[${datetime()}] Diagnostics: auto-dismissed ${removed} transient-likely error${removed === 1 ? '' : 's'} after ${siteId} success.`);
+  }
+}
+
+// v2.12.5 one-time cleanup for entries that accumulated while the Tier-2
+// name-to-id resolution bug was live (v2.8.78 → v2.12.4). Any undecided
+// count-1 entry whose resolved site has a successful run recorded AFTER
+// firstSeen was a "would-have-been transient" entry — sweep it now so the
+// Alerts / Diagnostics list is not permanently polluted. Skips entries the
+// user has acted on (decided) and entries with count >= 2 (real recurring).
+function _sweepStaleUndecidedDiagnostics() {
+  if (!diagnosticsDb || !diagnosticsDb.data || !diagnosticsDb.data.errors) return;
+  const errs = diagnosticsDb.data.errors;
+  const swept = [];
+  for (const fp of Object.keys(errs)) {
+    const e = errs[fp];
+    if (!e || e.decided) continue;
+    // Network-class entries (#158) are swept at any count — recurrence of
+    // a DNS blip isn't a signal that something in the code is wrong.
+    if ((e.count || 0) !== 1 && !isNetworkErrorMessage(e.message)) continue;
+    const entrySiteId = e.siteId || _resolveSiteIdFromScript(e.script);
+    if (!entrySiteId) continue;
+    const successAt = lastRunSuccess && lastRunSuccess[entrySiteId];
+    if (!successAt) continue;
+    // lastSeen, not firstSeen: a multi-count network entry must be
+    // superseded by a success AFTER its latest hit (identical for count 1).
+    const firstSeenMs = Date.parse(e.lastSeen || e.firstSeen);
+    // lastRunSuccess is "YYYY-MM-DD HH:MM:SS" (local slice) — replace the
+    // space with T so Date.parse treats it as ISO-ish. Fall through on
+    // any non-finite conversion (defensive).
+    const successMs = Date.parse(String(successAt).replace(' ', 'T'));
+    if (!isFinite(firstSeenMs) || !isFinite(successMs)) continue;
+    if (successMs <= firstSeenMs) continue;
+    delete errs[fp];
+    swept.push(`${e.script || entrySiteId} (fp=${fp.slice(0, 8)})`);
+  }
+  if (swept.length) {
+    diagnosticsDb.write().catch(err => console.warn(`[${datetime()}] diagnostics-state stale-sweep write failed: ${err.message}`));
+    console.log(`[${datetime()}] Diagnostics: swept ${swept.length} stale undecided error${swept.length === 1 ? '' : 's'} superseded by later success (${swept.join(', ')}).`);
   }
 }
 loadLastRuns();
@@ -3025,7 +3105,7 @@ async function flushDigest() {
     let alertBreakdown = '';
     try {
       const primeDb = await jsonDb('prime-gaming.json', {});
-      const terminalRx = /claimed|redeemed|expired|invalid|dismissed|retries exhausted/i;
+      const terminalRx = PRIME_PENDING_TERMINAL_RX;
       const manualStores = new Set(['microsoft store', 'xbox', 'microsoft', 'origin', 'ea app', 'gog.com']);
       let primePending = 0;
       for (const user of Object.values(primeDb.data || {})) {
@@ -6641,6 +6721,13 @@ function fieldRow(path, label, extra) {
   } else if (extra.multiline) {
     const sensAttr = sensitive ? ' data-sensitive-state="' + sensState + '"' : '';
     inputHtml = '<textarea' + sensAttr + ' oninput="setSettingValue(\\'' + path + '\\', this.value)">' + escapeHtml(value || '') + '</textarea>';
+  } else if (f.type === 'array') {
+    // v2.12.0 (#148): text-input on the joined value; comma-or-whitespace
+    // split on change. Schema coerce filters invalid tokens, so a typo
+    // like "epicgames" (missing hyphen) drops silently rather than
+    // rejecting the whole save.
+    const asStr = Array.isArray(value) ? value.join(', ') : '';
+    inputHtml = '<input type="text" value="' + escapeHtml(asStr) + '" oninput="setSettingValue(\\'' + path + '\\', this.value.split(/[,\\s]+/).map(s => s.trim()).filter(Boolean))">';
   } else {
     const sensAttr = sensitive ? ' data-sensitive-state="' + sensState + '"' : '';
     inputHtml = '<input type="text"' + sensAttr + ' value="' + escapeHtml(value || '') + '" oninput="setSettingValue(\\'' + path + '\\', this.value)">';
@@ -7025,6 +7112,22 @@ function paintSettings() {
       settingGroup('Logs',
         fieldRow('advanced.runHistoryMax', 'Past runs to retain', { unit: 'runs', hint: 'How many completed runs to keep in data/runs.json for the Logs tab Past-runs picker. Older entries are trimmed when this limit is exceeded. Higher = longer history but bigger file (~50 KB per run on average).' }) +
         fieldRow('advanced.recentClaimsLimit', 'Recent claims to show on Stats tab', { unit: 'claims', hint: 'How many entries to load into the Stats tab\\'s Recent claims list. Underlying per-service claim DBs always retain everything — this only controls how many surface in the panel. Default 200 covers ~2-3 months of typical activity; raise to 500 (the hard ceiling) if you check the panel monthly or less.' })
+      ) +
+      // v2.12.0 (#148 @DoSpamu): Steam-lookup quality filter — opt-in
+      // pre-claim gate that skips games below a score threshold or price
+      // floor. Uses Steam as the single quality signal source across all
+      // enabled claim scripts. See src/quality-lookup.js + CHANGELOG.
+      settingGroup('Quality filter (Steam-lookup)',
+        fieldRow('quality.enabled', 'Enable quality filter',
+          { hint: 'When on, each claim script listed in "Applies to" below consults Steam for the game\\'s user-review score, Metacritic score, and base price before claiming. Skips games below your thresholds. Default OFF — existing deploys keep claiming everything as they always have.' }) +
+        fieldRow('quality.appliesTo', 'Applies to (comma-separated)',
+          { hint: 'Which claim scripts consult the gate. Comma-separated ids from: epic-games, gog, steam, prime-gaming, fab. Leave empty to disable the gate everywhere (extra safety belt even when enabled=true).' }) +
+        fieldRow('quality.minScore', 'Minimum score (0-10)',
+          { hint: 'Skip games whose LOWER of {review-%/10, Metacritic/10} falls below this. Default 5 = skip only the clearly-bad ones. 8 = strict (skips lots of decent indies too). If neither score is available, the score gate is skipped for that game.' }) +
+        fieldRow('quality.minBasePrice', 'Minimum base price (USD)',
+          { hint: 'Skip games whose base (non-sale) price is at or below this. Also skips permanently-free-to-play games (which fill your library without ever being games you\\'d otherwise buy). Default $2 = catches shovelware with no reviews.' }) +
+        fieldRow('quality.skipUnmatched', 'Skip games with no Steam page',
+          { hint: 'Off (default): games not found on Steam pass through. On: skip them. Non-Steam-exclusive titles that Steam simply doesn\\'t list are typically low-quality outliers, but the safe default is to not skip on absence.' })
       );
   }
 
@@ -7177,7 +7280,7 @@ function updateSettingsFooter() {
     if (path.startsWith('scheduler.')) sectionCounts.scheduler++;
     else if (path.startsWith('notifications.') || path.startsWith('panel.')) sectionCounts.notifications++;
     else if (path.startsWith('services.')) sectionCounts.services++;
-    else if (path.startsWith('advanced.')) sectionCounts.advanced++;
+    else if (path.startsWith('advanced.') || path.startsWith('quality.')) sectionCounts.advanced++;
   }
   document.querySelectorAll('.settings-rail .rail-btn').forEach(b => {
     const section = b.dataset.section;
@@ -9705,7 +9808,7 @@ const server = http.createServer(async (req, res) => {
         let pendingPrime = 0;
         try {
           const pgDb = await jsonDb('prime-gaming.json', {});
-          const terminalRx = /claimed|redeemed|expired|invalid|dismissed|retries exhausted/i;
+          const terminalRx = PRIME_PENDING_TERMINAL_RX;
           for (const user of Object.values(pgDb.data || {})) {
             if (!user || typeof user !== 'object') continue;
             for (const entry of Object.values(user)) {
@@ -10942,7 +11045,7 @@ const server = http.createServer(async (req, res) => {
           'ea app': 'https://www.origin.com/redeem',
           'gog.com': gogRedeemBase,
         };
-        const terminalRx = /claimed|redeemed|expired|invalid|dismissed|retries exhausted/i;
+        const terminalRx = PRIME_PENDING_TERMINAL_RX;
         const pendingPrime = [];
         try {
           const pgDb = await jsonDb('prime-gaming.json', {});
@@ -11445,6 +11548,13 @@ server.listen(PANEL_PORT, async () => {
   // hits during the auto-session-check warm-up.
   try { await loadDiagnosticsDb(); }
   catch (e) { console.error(`[${datetime()}] failed to load diagnostics-state.json: ${e.message}`); }
+  // v2.12.5: one-time cleanup for undecided count-1 entries that accumulated
+  // while Tier-2 auto-dismiss was broken (display-name-vs-site-id mismatch,
+  // v2.8.78 → v2.12.4). Runs on every boot but only touches entries where a
+  // later success clearly self-healed the fingerprint, so it's idempotent
+  // and safe to keep long-term.
+  try { _sweepStaleUndecidedDiagnostics(); }
+  catch (e) { console.error(`[${datetime()}] stale-diagnostics sweep failed: ${e.message}`); }
 
   console.log(`[${datetime()}] Free Games Claimer ${APP_VERSION ? 'v' + APP_VERSION + ' ' : ''}— panel + scheduler`);
   // Auth-mode banner (v2.11.12) — makes it obvious at boot which path is

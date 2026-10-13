@@ -399,18 +399,29 @@ async function verifyAndClose() {
     activeBrowser = null;
     return { success: true, loggedIn: true, user: norm.user, site: siteId };
   } else {
+    siteStatus[siteId] = {
+      status: norm.status === 'error' ? 'error' : 'not_logged_in',
+      user: norm.user,
+      error: norm.error,
+      details: norm.details,
+      checkedAt: datetime(),
+    };
     const isError = norm.status === 'error';
     const failMsg = isError
       ? `Verification error for ${site.name}: ${norm.error}. Browser remains open.`
-      : `Login NOT detected for ${site.name}. Browser remains open.`;
+      : `Login NOT fully detected for ${site.name} (${norm.user || 'unauthenticated'}). Browser remains open.`;
     console.log(`[${datetime()}] ${failMsg}`);
+    let userMsg = 'Login not detected. Please complete the login process and try again.';
+    if (isError) {
+      userMsg = `Verification failed with error: ${norm.error}. Please check your connection and try again.`;
+    } else if (norm.user) {
+      userMsg = `Partial login: ${norm.user}. Please make sure you are signed in to both services.`;
+    }
     return {
       success: true,
       loggedIn: false,
       site: siteId,
-      message: isError
-        ? `Verification failed with error: ${norm.error}. Please check your connection and try again.`
-        : 'Login not detected. Please complete the login process and try again.',
+      message: userMsg,
     };
   }
 }
@@ -462,7 +473,7 @@ async function checkSiteStatus(siteId) {
     return { ...result, site: siteId };
   } catch (e) {
     console.error(`[${datetime()}] Check failed for ${site.name}:`, e.message);
-    siteStatus[siteId] = { status: 'error', user: null, checkedAt: datetime() };
+    siteStatus[siteId] = { status: 'error', user: null, error: e.message, checkedAt: datetime() };
     return { loggedIn: false, site: siteId, error: e.message };
   } finally {
     if (context) {
@@ -8760,7 +8771,7 @@ function render() {
     let statusText = 'Not checked';
     if (s.status === 'logged_in') statusText = 'Logged in' + (s.user ? ' as ' + s.user : '') + '.';
     else if (s.status === 'not_logged_in') statusText = s.user ? ('Not fully signed in (' + s.user + ').') : 'Not logged in.';
-    else if (s.status === 'error') statusText = 'Error checking.';
+    else if (s.status === 'error') statusText = s.error ? ('Error checking (' + escapeHtml(s.error) + ').') : 'Error checking.';
     if (s.lastSuccessfulRun) statusText += ' Successful Run ' + s.lastSuccessfulRun + '.';
     else statusText += ' Successful Run: never.';
     if (s.detachedRunning) statusText += ' Running in background.';

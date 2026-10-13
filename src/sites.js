@@ -904,27 +904,65 @@ export const SITES = [
     ],
     async checkLogin(page) {
       try {
-        await page.goto('https://eu.alienwarearena.com/control-center', { waitUntil: 'domcontentloaded', timeout: 20000 });
-        await page.waitForTimeout(2500);
-
-        // Check if redirected to login / unauthenticated page
         const currentUrl = page.url ? page.url() : '';
-        const isLoginRedirect = (/\/login|\/account\/login/i).test(currentUrl);
+        const alreadyOnAwa = currentUrl.includes('alienwarearena.com/control-center');
 
-        let awaLoggedIn = false;
-        let awaUser = null;
-        if (!isLoginRedirect) {
-          awaLoggedIn = await page.locator([
-            '[data-is-logged-in="true"]',
-            'a[href="/quests"]',
-            'a[href*="/member/"]',
-            '.user-avatar',
-            '.nav-user',
-          ].join(', ')).first().count() > 0;
+        if (!alreadyOnAwa) {
+          try {
+            await page.goto('https://eu.alienwarearena.com/control-center', { waitUntil: 'domcontentloaded', timeout: 30000 });
+          } catch {
+            // Fall back to www subdomain if eu subdomain times out or fails
+            await page.goto('https://www.alienwarearena.com/control-center', { waitUntil: 'domcontentloaded', timeout: 30000 });
+          }
+        }
+        await page.waitForTimeout(2000);
 
-          if (awaLoggedIn) {
-            awaUser = await page.locator('.media-body, .username, [class*="username"], .user-name, [data-user-name]').first().innerText({ timeout: 2000 }).catch(() => 'member');
-            awaUser = awaUser?.trim() || 'member';
+        // Atomic in-page DOM check
+        const domResult = typeof page.evaluate === 'function'
+          ? await page.evaluate(() => {
+            const href = window.location.href || '';
+            const isRedirect = (/\/login|\/account\/login/i).test(href);
+            if (isRedirect) return { isLoginRedirect: true, loggedIn: false, user: null };
+
+            const loggedInNode = document.querySelector([
+              'a.dropdown-item[href="/quests"][data-is-logged-in="true"]',
+              '[data-is-logged-in="true"]',
+              'a[href="/quests"]',
+              'a[href*="/member/"]',
+              '.user-avatar',
+              '.nav-user',
+            ].join(', '));
+            const loggedIn = !!loggedInNode;
+
+            let user = null;
+            if (loggedIn) {
+              const userNode = document.querySelector('.media-body, .username, [class*="username"], .user-name, [data-user-name]');
+              user = userNode?.textContent?.trim() || 'member';
+            }
+            return { isLoginRedirect: false, loggedIn, user };
+          }).catch(() => null)
+          : null;
+
+        let awaLoggedIn = domResult ? domResult.loggedIn : false;
+        let awaUser = domResult ? domResult.user : null;
+
+        // Fallback to locator check if evaluate returned null or is unavailable
+        if (!domResult) {
+          const pageUrl = page.url ? (typeof page.url === 'function' ? page.url() : page.url) : '';
+          const isLoginRedirect = (/\/login|\/account\/login/i).test(pageUrl);
+          if (!isLoginRedirect && typeof page.locator === 'function') {
+            awaLoggedIn = await page.locator([
+              '[data-is-logged-in="true"]',
+              'a[href="/quests"]',
+              'a[href*="/member/"]',
+              '.user-avatar',
+              '.nav-user',
+            ].join(', ')).first().count().catch(() => 0) > 0;
+
+            if (awaLoggedIn) {
+              awaUser = await page.locator('.media-body, .username, [class*="username"], .user-name, [data-user-name]').first().innerText({ timeout: 2000 }).catch(() => 'member');
+              awaUser = awaUser?.trim() || 'member';
+            }
           }
         }
 
@@ -932,9 +970,10 @@ export const SITES = [
         let twitchLoggedIn = false;
         let twitchUser = null;
         try {
-          const cookies = await page.context().cookies('https://www.twitch.tv');
-          const authCookie = cookies.find(c => c.name === 'auth-token' && c.value);
-          const loginCookie = cookies.find(c => c.name === 'login' && c.value);
+          const ctx = page.context ? (typeof page.context === 'function' ? page.context() : page.context) : null;
+          const cookies = ctx && typeof ctx.cookies === 'function' ? await ctx.cookies().catch(() => []) : [];
+          const authCookie = cookies.find(c => (!c.domain || c.domain.includes('twitch')) && c.name === 'auth-token' && c.value);
+          const loginCookie = cookies.find(c => (!c.domain || c.domain.includes('twitch')) && c.name === 'login' && c.value);
           if (authCookie) {
             twitchLoggedIn = true;
             twitchUser = loginCookie ? decodeURIComponent(loginCookie.value) : 'logged-in';

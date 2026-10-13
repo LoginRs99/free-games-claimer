@@ -921,47 +921,85 @@ export const SITES = [
         const domResult = typeof page.evaluate === 'function'
           ? await page.evaluate(() => {
             const href = window.location.href || '';
+            const title = document.title || '';
             const isRedirect = (/\/login|\/account\/login/i).test(href);
-            if (isRedirect) return { isLoginRedirect: true, loggedIn: false, user: null };
+            const isLoginPage = isRedirect || /Log in/i.test(title) || !!document.querySelector('form#login-form, .form-login, input[name="_password"]');
 
+            // 1. Direct window global check (Alienware Arena script: var user_is_logged_in = false / true)
+            let windowFlag = null;
+            if (typeof window.user_is_logged_in === 'boolean') {
+              windowFlag = window.user_is_logged_in;
+            }
+
+            // 2. Logged-in DOM selectors
             const loggedInNode = document.querySelector([
               'a.dropdown-item[href="/quests"][data-is-logged-in="true"]',
               '[data-is-logged-in="true"]',
-              'a[href="/quests"]',
-              'a[href*="/member/"]',
               '.user-avatar',
               '.nav-user',
+              '#um',
+              'a[href*="/member/"]',
+              'a[href="/quests"]',
             ].join(', '));
-            const loggedIn = !!loggedInNode;
+
+            // 3. Unauthenticated DOM selectors
+            const loggedOutNode = document.querySelector([
+              'a.nav-link-login',
+              'a[href*="/login"]',
+              'form#login-form',
+              '.form-login',
+              '#biometrics-login-button',
+            ].join(', '));
+
+            let loggedIn = false;
+            if (windowFlag === true) {
+              loggedIn = true;
+            } else if (windowFlag === false) {
+              loggedIn = false;
+            } else if (isLoginPage) {
+              loggedIn = false;
+            } else if (loggedInNode) {
+              loggedIn = true;
+            } else if (loggedOutNode) {
+              loggedIn = false;
+            }
 
             let user = null;
             if (loggedIn) {
-              const userNode = document.querySelector('.media-body, .username, [class*="username"], .user-name, [data-user-name]');
-              user = userNode?.textContent?.trim() || 'member';
+              if (typeof window.user_username === 'string' && window.user_username) {
+                user = window.user_username.trim();
+              } else {
+                const userNode = document.querySelector('.media-body, .username, [class*="username"], .user-name, [data-user-name]');
+                user = userNode?.textContent?.trim() || 'member';
+              }
             }
-            return { isLoginRedirect: false, loggedIn, user };
+            return { isLoginPage, loggedIn, user, evaluated: true };
           }).catch(() => null)
           : null;
 
-        let awaLoggedIn = domResult ? domResult.loggedIn : false;
-        let awaUser = domResult ? domResult.user : null;
+        let awaLoggedIn = (domResult && domResult.evaluated) ? domResult.loggedIn : false;
+        let awaUser = (domResult && domResult.evaluated) ? domResult.user : null;
 
-        // Fallback to locator check if evaluate returned null or is unavailable
-        if (!domResult) {
+        // Fallback to locator check if evaluate was not run or evaluate returned null
+        if (!domResult || !domResult.evaluated) {
           const pageUrl = page.url ? (typeof page.url === 'function' ? page.url() : page.url) : '';
           const isLoginRedirect = (/\/login|\/account\/login/i).test(pageUrl);
           if (!isLoginRedirect && typeof page.locator === 'function') {
-            awaLoggedIn = await page.locator([
-              '[data-is-logged-in="true"]',
-              'a[href="/quests"]',
-              'a[href*="/member/"]',
-              '.user-avatar',
-              '.nav-user',
-            ].join(', ')).first().count().catch(() => 0) > 0;
+            const hasLoginForm = await page.locator('form#login-form, .form-login, input[name="_password"]').first().count().catch(() => 0) > 0;
+            if (!hasLoginForm) {
+              awaLoggedIn = await page.locator([
+                '[data-is-logged-in="true"]',
+                'a[href="/quests"]',
+                'a[href*="/member/"]',
+                '.user-avatar',
+                '.nav-user',
+                '#um',
+              ].join(', ')).first().count().catch(() => 0) > 0;
 
-            if (awaLoggedIn) {
-              awaUser = await page.locator('.media-body, .username, [class*="username"], .user-name, [data-user-name]').first().innerText({ timeout: 2000 }).catch(() => 'member');
-              awaUser = awaUser?.trim() || 'member';
+              if (awaLoggedIn) {
+                awaUser = await page.locator('.media-body, .username, [class*="username"], .user-name, [data-user-name]').first().innerText({ timeout: 2000 }).catch(() => 'member');
+                awaUser = awaUser?.trim() || 'member';
+              }
             }
           }
         }

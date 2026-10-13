@@ -120,19 +120,54 @@ async function readAwaLogin() {
   await page.waitForTimeout(2500);
 
   const result = await page.evaluate(() => {
-    // Selectors referenced from Alienware Arena DOM snapshot:
+    const title = document.title || '';
+    const isLoginPage = /Log in/i.test(title) || !!document.querySelector('form#login-form, .form-login, input[name="_password"]');
+
+    let windowFlag = null;
+    if (typeof window.user_is_logged_in === 'boolean') {
+      windowFlag = window.user_is_logged_in;
+    }
+
     const loggedInNode = document.querySelector([
       'a.dropdown-item[href="/quests"][data-is-logged-in="true"]',
       '[data-is-logged-in="true"]',
-      'a[href="/quests"]',
-      'a[href*="/member/"]',
       '.user-avatar',
       '.nav-user',
+      '#um',
+      'a[href*="/member/"]',
+      'a[href="/quests"]',
     ].join(', '));
-    const loggedIn = !!loggedInNode;
 
-    const userNode = document.querySelector('.media-body, .username, [class*="username"], .user-name, [data-user-name]');
-    const user = userNode?.textContent?.trim() || null;
+    const loggedOutNode = document.querySelector([
+      'a.nav-link-login',
+      'a[href*="/login"]',
+      'form#login-form',
+      '.form-login',
+      '#biometrics-login-button',
+    ].join(', '));
+
+    let loggedIn = false;
+    if (windowFlag === true) {
+      loggedIn = true;
+    } else if (windowFlag === false) {
+      loggedIn = false;
+    } else if (isLoginPage) {
+      loggedIn = false;
+    } else if (loggedInNode) {
+      loggedIn = true;
+    } else if (loggedOutNode) {
+      loggedIn = false;
+    }
+
+    let user = null;
+    if (loggedIn) {
+      if (typeof window.user_username === 'string' && window.user_username) {
+        user = window.user_username.trim();
+      } else {
+        const userNode = document.querySelector('.media-body, .username, [class*="username"], .user-name, [data-user-name]');
+        user = userNode?.textContent?.trim() || null;
+      }
+    }
 
     const text = document.body?.innerText || '';
     const arpMatch = text.match(/(?:ARP|Arena Rewards Points)[^\d]{0,20}([\d,]+)/i)

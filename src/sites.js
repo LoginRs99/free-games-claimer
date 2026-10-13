@@ -997,6 +997,91 @@ export function siteVersion(id) {
   return SITES_BY_ID[id]?.version || null;
 }
 
+/**
+ * Normalizes login check results from either modern tripartite ({ status: 'authenticated' | 'unauthenticated' | 'error' })
+ * or legacy/upstream Boolean format ({ loggedIn: boolean, user?: string, error?: string }).
+ *
+ * Guarantees that errors (timeouts, network drops, DOM crashes) are never conflated with confirmed logouts.
+ */
+export function normalizeLoginResult(result) {
+  if (!result || typeof result !== 'object') {
+    return {
+      status: 'error',
+      loggedIn: false,
+      user: null,
+      error: 'No result returned from login check',
+      details: null,
+    };
+  }
+
+  // 1. Explicit tripartite status takes precedence
+  if (result.status === 'authenticated') {
+    return {
+      status: 'authenticated',
+      loggedIn: true,
+      user: result.user || null,
+      error: null,
+      details: result.details || null,
+    };
+  }
+  if (result.status === 'error') {
+    return {
+      status: 'error',
+      loggedIn: false,
+      user: null,
+      error: result.error || 'Unknown check error',
+      details: result.details || null,
+    };
+  }
+  if (result.status === 'unauthenticated') {
+    return {
+      status: 'unauthenticated',
+      loggedIn: false,
+      user: result.user || null,
+      error: null,
+      details: result.details || null,
+    };
+  }
+
+  // 2. Legacy / upstream format fallback:
+  // If error is present, it was an aborted or failed check, NOT confirmed unauthenticated
+  if (result.error) {
+    return {
+      status: 'error',
+      loggedIn: false,
+      user: null,
+      error: String(result.error),
+      details: result.details || null,
+    };
+  }
+
+  if (result.loggedIn === true) {
+    return {
+      status: 'authenticated',
+      loggedIn: true,
+      user: result.user || null,
+      error: null,
+      details: result.details || null,
+    };
+  }
+
+  return {
+    status: 'unauthenticated',
+    loggedIn: false,
+    user: result.user || null,
+    error: null,
+    details: result.details || null,
+  };
+}
+
+/**
+ * Returns true ONLY if a session check definitively confirmed the user is logged out (stale session).
+ * Returns false for authenticated sessions, check errors, timeouts, or inconclusive probes.
+ */
+export function isSessionStale(result) {
+  return normalizeLoginResult(result).status === 'unauthenticated';
+}
+
 // The login-capable subset (everything with a checkLogin function). The
 // existing engine code paths (Sessions tab, checkAllSites, launchSite,
 // verifyAndClose, closeBrowser) only iterate over login-capable sites.

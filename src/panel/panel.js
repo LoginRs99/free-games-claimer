@@ -7,7 +7,7 @@ import { datetime, notify, jsonDb, normalizeTitle, cleanProfileLocks, readDigest
 import { launchContext } from '#src/browser.js';
 import { cfg } from '#src/config.js';
 import { describeConfig, patchConfig, describeEnv, getSchedulerConfig, CONFIG_FILE_PATH, readConfigFile, writeConfigFile, setByPath as cfgSetByPath, deleteByPath as cfgDeleteByPath } from '#src/app-config.js';
-import { SITES as SITE_REGISTRY, getLoginSitesById, getClaimScriptOrder, getLinkedActiveMap, getClaimDbFiles, getServiceRows, normalizeClaimCommand } from '#src/sites.js';
+import { SITES as SITE_REGISTRY, getLoginSitesById, getClaimScriptOrder, getLinkedActiveMap, getClaimDbFiles, getServiceRows, normalizeClaimCommand, normalizeLoginResult, isSessionStale } from '#src/sites.js';
 import { fetchGamerPowerGiveaways, filterFor as filterGpFor, COLLECTOR_PATTERNS as GP_COLLECTOR_PATTERNS, GP_TITLE_HINTS } from '#src/gamerpower.js';
 import { fetchFGFPosts, filterFor as filterFgfFor, cleanTitle as fgfCleanTitle, COLLECTOR_TITLE_PATTERNS as FGF_COLLECTOR_PATTERNS } from '#src/freegamefindings.js';
 import { WATCHER_SOURCES, SOURCE_PRIORITY, loadAllWatcherProducts } from '#src/discoveries.js';
@@ -384,16 +384,34 @@ async function verifyAndClose() {
   console.log(`[${datetime()}] Verifying login for ${site.name}...`);
 
   const result = await site.checkLogin(page);
+  const norm = normalizeLoginResult(result);
 
-  if (result.loggedIn) {
-    console.log(`[${datetime()}] Login verified for ${site.name} as ${result.user}. Saving session.`);
-    siteStatus[siteId] = { status: 'logged_in', user: result.user, checkedAt: datetime() };
+  if (norm.status === 'authenticated') {
+    console.log(`[${datetime()}] Login verified for ${site.name} as ${norm.user}. Saving session.`);
+    siteStatus[siteId] = {
+      status: 'logged_in',
+      user: norm.user,
+      error: null,
+      details: norm.details,
+      checkedAt: datetime(),
+    };
     await context.close();
     activeBrowser = null;
-    return { success: true, loggedIn: true, user: result.user, site: siteId };
+    return { success: true, loggedIn: true, user: norm.user, site: siteId };
   } else {
-    console.log(`[${datetime()}] Login NOT detected for ${site.name}. Browser remains open.`);
-    return { success: true, loggedIn: false, site: siteId, message: 'Login not detected. Please complete the login process and try again.' };
+    const isError = norm.status === 'error';
+    const failMsg = isError
+      ? `Verification error for ${site.name}: ${norm.error}. Browser remains open.`
+      : `Login NOT detected for ${site.name}. Browser remains open.`;
+    console.log(`[${datetime()}] ${failMsg}`);
+    return {
+      success: true,
+      loggedIn: false,
+      site: siteId,
+      message: isError
+        ? `Verification failed with error: ${norm.error}. Please check your connection and try again.`
+        : 'Login not detected. Please complete the login process and try again.',
+    };
   }
 }
 
@@ -429,16 +447,18 @@ async function checkSiteStatus(siteId) {
       extraArgs: ['--no-sandbox', '--disable-gpu'],
     }));
     const result = await site.checkLogin(page);
-    const resolvedStatus = result.status
-      ? (result.status === 'authenticated' ? 'logged_in' : result.status === 'error' ? 'error' : 'not_logged_in')
-      : (result.loggedIn ? 'logged_in' : (result.error ? 'error' : 'not_logged_in'));
+    const norm = normalizeLoginResult(result);
+    const resolvedStatus = norm.status === 'authenticated'
+      ? 'logged_in'
+      : (norm.status === 'error' ? 'error' : 'not_logged_in');
     siteStatus[siteId] = {
       status: resolvedStatus,
-      user: result.user || null,
-      error: result.error || null,
+      user: norm.user,
+      error: norm.error,
+      details: norm.details,
       checkedAt: datetime(),
     };
-    console.log(`[${datetime()}] ${site.name}: ${result.loggedIn ? `logged in as ${result.user}` : (result.error ? `check error (${result.error})` : 'not logged in')}`);
+    console.log(`[${datetime()}] ${site.name}: ${norm.status === 'authenticated' ? `logged in as ${norm.user}` : (norm.status === 'error' ? `check error (${norm.error})` : 'not logged in')}`);
     return { ...result, site: siteId };
   } catch (e) {
     console.error(`[${datetime()}] Check failed for ${site.name}:`, e.message);
@@ -2623,10 +2643,7 @@ async function postRunSessionCheck(targetSites = null) {
   }
   const stale = [];
   for (const [siteId, r] of Object.entries(results)) {
-    if (!r) continue;
-    // Skip if check failed with network/navigation error and session was not definitively unauthenticated
-    if (r.error && r.status !== 'unauthenticated' && r.loggedIn !== false) continue;
-    if (r.status === 'unauthenticated' || r.loggedIn === false) {
+    if (isSessionStale(r)) {
       stale.push(siteId);
     }
   }

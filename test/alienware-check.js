@@ -159,4 +159,51 @@ console.log('ok: alienware-arena registry definition verified');
   console.log('ok: Error handling ->', res);
 }
 
-console.log('\n--- ALL ALIENWARE UNIT TESTS PASSED ---');
+console.log('\n--- Testing normalizeLoginResult and isSessionStale contract ---');
+import { normalizeLoginResult, isSessionStale } from '#src/sites.js';
+
+// Contract Test 1: Modern tripartite results
+{
+  const auth = normalizeLoginResult({ status: 'authenticated', loggedIn: true, user: 'hero' });
+  assert.equal(auth.status, 'authenticated');
+  assert.equal(auth.loggedIn, true);
+  assert.equal(isSessionStale(auth), false, 'Authenticated session must NOT be stale');
+
+  const unauth = normalizeLoginResult({ status: 'unauthenticated', loggedIn: false });
+  assert.equal(unauth.status, 'unauthenticated');
+  assert.equal(unauth.loggedIn, false);
+  assert.equal(isSessionStale(unauth), true, 'Unauthenticated session MUST be stale');
+
+  const err = normalizeLoginResult({ status: 'error', loggedIn: false, error: 'net::ERR_TIMED_OUT' });
+  assert.equal(err.status, 'error');
+  assert.equal(err.loggedIn, false);
+  assert.equal(err.error, 'net::ERR_TIMED_OUT');
+  assert.equal(isSessionStale(err), false, 'Error/timeout with loggedIn:false MUST NOT trigger stale session alert');
+  console.log('ok: Modern tripartite normalization verified');
+}
+
+// Contract Test 2: Legacy / upstream Boolean formats
+{
+  const legacyAuth = normalizeLoginResult({ loggedIn: true, user: 'gamer' });
+  assert.equal(legacyAuth.status, 'authenticated');
+  assert.equal(isSessionStale(legacyAuth), false);
+
+  const legacyUnauth = normalizeLoginResult({ loggedIn: false });
+  assert.equal(legacyUnauth.status, 'unauthenticated');
+  assert.equal(isSessionStale(legacyUnauth), true);
+
+  const legacyErr = normalizeLoginResult({ loggedIn: false, error: 'Navigation timeout 20000ms' });
+  assert.equal(legacyErr.status, 'error');
+  assert.equal(isSessionStale(legacyErr), false, 'Legacy error must NOT be treated as confirmed logout');
+
+  const busyErr = normalizeLoginResult({ error: 'Browser session active, close it first.' });
+  assert.equal(busyErr.status, 'error');
+  assert.equal(isSessionStale(busyErr), false);
+
+  assert.equal(isSessionStale(null), false);
+  assert.equal(isSessionStale(undefined), false);
+  console.log('ok: Legacy format backward-compatibility & error suppression verified');
+}
+
+console.log('\n--- ALL ALIENWARE & AUTH CONTRACT TESTS PASSED ---');
+
